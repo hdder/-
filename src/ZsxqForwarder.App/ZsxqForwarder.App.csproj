@@ -4,7 +4,6 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AssemblyName>ZsxqForwarder</AssemblyName>
     <RootNamespace>ZsxqForwarder.App</RootNamespace>
     <Nullable>enable</Nullable>
