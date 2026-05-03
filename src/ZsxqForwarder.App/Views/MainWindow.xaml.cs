@@ -17,6 +17,7 @@ public partial class MainWindow : Window
     private readonly AuthService _authService;
     private readonly DatabaseService _db;
     private readonly SyncService _syncService;
+    private readonly ImageHostingService _imageHosting;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
     private ObservableCollection<GroupConfig> _groups = [];
@@ -40,6 +41,9 @@ public partial class MainWindow : Window
 
         _forwardService = new ForwardService();
         _forwardService.SetDatabase(_db);
+        _imageHosting = new ImageHostingService(_db, _db.GetImagesDir(), _db.GetImageServerPort(), _db.GetImagePublicHost());
+        _imageHosting.Start();
+        _forwardService.SetImageHosting(_imageHosting);
         ApplyForwarderSettings();
 
         _monitorService = new MonitorService(_topicService, _forwardService);
@@ -651,7 +655,33 @@ public partial class MainWindow : Window
         }
     }
 
-    // Resend
+    // Resend from topic list
+    private async void OnTopicResendClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is not System.Windows.Controls.Button btn) return;
+        if (btn.Tag is not long topicId) return;
+        if (_selectedGroup == null) return;
+
+        var topic = _db.GetTopic(topicId);
+        if (topic == null)
+        {
+            MessageBox.Show("帖子数据不存在", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            await _forwardService.ForwardAsync(topic, _selectedGroup.GroupId, _selectedGroup.Name);
+            RefreshForwardLogs();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"补发失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    // Resend from forward log
     private async void OnResendClick(object sender, RoutedEventArgs e)
     {
         if (sender is not System.Windows.Controls.Button btn) return;
@@ -798,6 +828,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _monitorService.Dispose();
+        _imageHosting.Dispose();
         _webView.Dispose();
         base.OnClosed(e);
     }

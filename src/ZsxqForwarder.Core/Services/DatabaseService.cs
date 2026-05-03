@@ -16,6 +16,8 @@ public class DatabaseService
 
     private string ConnectionString => $"Data Source={DbPath}";
 
+    public static string GetImagesDir() => Path.Combine(DbDir, "images");
+
     public void Init()
     {
         Directory.CreateDirectory(DbDir);
@@ -74,6 +76,14 @@ public class DatabaseService
             CREATE TABLE IF NOT EXISTS SyncState (
                 Key TEXT PRIMARY KEY,
                 Value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS LocalImages (
+                UrlHash TEXT PRIMARY KEY,
+                RemoteUrl TEXT NOT NULL,
+                LocalPath TEXT NOT NULL,
+                LocalUrl TEXT NOT NULL,
+                DownloadedAt TEXT NOT NULL
             );
         ");
 
@@ -331,6 +341,42 @@ public class DatabaseService
     public void SetMonitorInterval(int seconds)
     {
         SetSetting("MonitorInterval", seconds.ToString());
+    }
+
+    // Local Images
+    public void SaveLocalImage(string urlHash, string remoteUrl, string localPath, string localUrl)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Execute(
+            "INSERT OR REPLACE INTO LocalImages (UrlHash, RemoteUrl, LocalPath, LocalUrl, DownloadedAt) VALUES (@UrlHash, @RemoteUrl, @LocalPath, @LocalUrl, @DownloadedAt)",
+            new { UrlHash = urlHash, RemoteUrl = remoteUrl, LocalPath = localPath, LocalUrl = localUrl, DownloadedAt = DateTime.UtcNow.ToString("O") });
+    }
+
+    public string? GetLocalImageUrl(string urlHash)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        return conn.QueryFirstOrDefault<string>("SELECT LocalUrl FROM LocalImages WHERE UrlHash = @UrlHash", new { UrlHash = urlHash });
+    }
+
+    public int GetImageServerPort()
+    {
+        var val = GetSetting("ImageServerPort");
+        return int.TryParse(val, out var port) ? port : 8900;
+    }
+
+    public void SetImageServerPort(int port)
+    {
+        SetSetting("ImageServerPort", port.ToString());
+    }
+
+    public string GetImagePublicHost()
+    {
+        return GetSetting("ImagePublicHost") ?? "localhost";
+    }
+
+    public void SetImagePublicHost(string host)
+    {
+        SetSetting("ImagePublicHost", host);
     }
 
     // SyncState

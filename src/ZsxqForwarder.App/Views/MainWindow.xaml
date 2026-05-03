@@ -166,18 +166,28 @@
                                                    TextWrapping="Wrap" MaxHeight="60"
                                                    TextTrimming="CharacterEllipsis"
                                                    LineStackingStrategy="MaxHeight"/>
-                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                            <TextBlock FontSize="11" Foreground="{StaticResource TextSecondaryBrush}">
-                                                <Run Text="Like "/><Run Text="{Binding LikesCount}"/>
-                                            </TextBlock>
-                                            <TextBlock FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="12,0,0,0">
-                                                <Run Text="Comment "/><Run Text="{Binding CommentsCount}"/>
-                                            </TextBlock>
-                                            <Border Background="#FFF3E0" CornerRadius="3" Padding="4,1" Margin="12,0,0,0"
-                                                    Visibility="{Binding Digested, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="精华" FontSize="10" Foreground="#E65100"/>
-                                            </Border>
-                                        </StackPanel>
+                                        <Grid Margin="0,4,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                <TextBlock FontSize="11" Foreground="{StaticResource TextSecondaryBrush}">
+                                                    <Run Text="Like "/><Run Text="{Binding LikesCount}"/>
+                                                </TextBlock>
+                                                <TextBlock FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="12,0,0,0">
+                                                    <Run Text="Comment "/><Run Text="{Binding CommentsCount}"/>
+                                                </TextBlock>
+                                                <Border Background="#FFF3E0" CornerRadius="3" Padding="4,1" Margin="12,0,0,0"
+                                                        Visibility="{Binding Digested, Converter={StaticResource BoolToVis}}">
+                                                    <TextBlock Text="精华" FontSize="10" Foreground="#E65100"/>
+                                                </Border>
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="补发" FontSize="10"
+                                                    Padding="8,2" Margin="4,0,0,0"
+                                                    Click="OnTopicResendClick"
+                                                    Tag="{Binding TopicId}"/>
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>

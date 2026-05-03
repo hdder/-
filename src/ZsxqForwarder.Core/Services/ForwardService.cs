@@ -16,6 +16,7 @@ public class ForwardService
     private List<ForwardRule> _rules = [];
     private Func<ForwardRule, IForwarder?>? _forwarderFactory;
     private DatabaseService? _db;
+    private ImageHostingService? _imageHosting;
 
     public IReadOnlyList<IForwarder> Forwarders => _forwarders.AsReadOnly();
 
@@ -42,6 +43,11 @@ public class ForwardService
     public void SetDatabase(DatabaseService db)
     {
         _db = db;
+    }
+
+    public void SetImageHosting(ImageHostingService? service)
+    {
+        _imageHosting = service;
     }
 
     public async Task ForwardAsync(Topic topic, long groupId, string groupName = "")
@@ -72,6 +78,10 @@ public class ForwardService
 
     private async Task ForwardAndLogAsync(IForwarder forwarder, Topic topic, long groupId, ForwardRule rule)
     {
+        // Replace expired image URLs with local URLs before forwarding
+        if (_imageHosting != null)
+            topic = await _imageHosting.ReplaceImageUrlsAsync(topic);
+
         var author = topic.Talk?.Owner?.Name ?? topic.Task?.Owner?.Name ?? "Unknown";
         var content = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
         var preview = content.Length > 100 ? content[..100] + "..." : content;

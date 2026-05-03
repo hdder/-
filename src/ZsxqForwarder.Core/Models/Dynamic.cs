@@ -29,8 +29,21 @@ public class Dynamic
     {
         get
         {
-            if (DateTimeOffset.TryParse(CreateTimeStr, out var dto))
+            var trimmed = CreateTimeStr?.Trim();
+            if (string.IsNullOrEmpty(trimmed)) return 0;
+
+            // DOM format: "2026-05-03 17:01"
+            if (DateTimeOffset.TryParseExact(trimmed, "yyyy-MM-dd HH:mm",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeLocal, out var dto))
                 return dto.ToUnixTimeMilliseconds();
+
+            // Fallback for ISO 8601 or other formats
+            if (DateTimeOffset.TryParse(trimmed,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeLocal, out dto))
+                return dto.ToUnixTimeMilliseconds();
+
             return 0;
         }
     }
