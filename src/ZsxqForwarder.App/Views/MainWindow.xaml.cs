@@ -183,16 +183,28 @@ public partial class MainWindow : Window
     {
         var js = @"
             (() => {
+                // Step 1: Build group map from sidebar (href contains real group_id)
+                const groupMap = {};
+                const groupLinks = document.querySelectorAll('.group-list a[href*=""/group/""]');
+                for (const a of groupLinks) {
+                    const name = a.querySelector('.group-name')?.textContent?.trim();
+                    const href = a.getAttribute('href') || '';
+                    const match = href.match(/\/group\/(\d+)/);
+                    if (name && match) {
+                        groupMap[name] = parseInt(match[1]);
+                    }
+                }
+
                 const dynamics = [];
 
-                // Strategy 1: /dynamics page - div.dynamic-topic
+                // Step 2: Extract posts from .dynamic-topic (/dynamics page)
                 const dynamicTopics = document.querySelectorAll('.dynamic-topic');
                 for (const dt of dynamicTopics) {
-                    const item = extractDynamicTopic(dt);
+                    const item = extractDynamicTopic(dt, groupMap);
                     if (item) dynamics.push(item);
                 }
 
-                // Strategy 2: /group/{id} page - .topic-container
+                // Step 3: Fallback - extract from .topic-container (/group/{id} page)
                 if (dynamics.length === 0) {
                     const topicContainers = document.querySelectorAll('.topic-container');
                     for (const tc of topicContainers) {
@@ -203,17 +215,10 @@ public partial class MainWindow : Window
 
                 if (dynamics.length === 0) return null;
 
-                // Also extract groups from sidebar
+                // Step 4: Build groups list from groupMap
                 const groups = [];
-                const groupNames = document.querySelectorAll('.from-group .group-name, .group-item');
-                const seenGroups = new Set();
-                for (const gn of groupNames) {
-                    const name = gn.textContent?.trim();
-                    const avatar = gn.previousElementSibling?.src || gn.src || '';
-                    if (name && !seenGroups.has(name)) {
-                        seenGroups.add(name);
-                        groups.push({group_id: 0, name: name, avatar_url: avatar, background_url: ''});
-                    }
+                for (const [name, id] of Object.entries(groupMap)) {
+                    groups.push({group_id: id, name: name, avatar_url: '', background_url: ''});
                 }
 
                 return JSON.stringify({
@@ -225,7 +230,7 @@ public partial class MainWindow : Window
                     }
                 });
 
-                function extractDynamicTopic(el) {
+                function extractDynamicTopic(el, gMap) {
                     const avatar = el.querySelector('.author .avatar')?.src || '';
                     const authorName = el.querySelector('.author .role')?.textContent?.trim() || '';
                     const dateText = el.querySelector('.author .date')?.textContent?.trim() || '';
@@ -234,6 +239,7 @@ public partial class MainWindow : Window
                     const groupAvatar = el.querySelector('.from-group .group-avatar')?.src || '';
                     const likes = parseInt(el.querySelector('.like-count')?.textContent?.trim() || '0');
                     const comments = parseInt(el.querySelector('.comment-count')?.textContent?.trim() || '0');
+                    const groupId = gMap[groupName] || 0;
 
                     if (!content && !authorName) return null;
 
@@ -244,7 +250,7 @@ public partial class MainWindow : Window
                         topic: {
                             topic_id: 0,
                             type: 'talk',
-                            group: {group_id: 0, name: groupName},
+                            group: {group_id: groupId, name: groupName},
                             talk: {
                                 owner: {name: authorName, avatar_url: avatar},
                                 text: content
@@ -253,7 +259,7 @@ public partial class MainWindow : Window
                             comments_count: comments
                         },
                         group: {
-                            group_id: 0,
+                            group_id: groupId,
                             name: groupName,
                             avatar_url: groupAvatar,
                             background_url: ''
