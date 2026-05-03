@@ -16,6 +16,7 @@ public class GroupConfig
 
 public class ForwardRule
 {
+    public int Id { get; set; }
     public long GroupId { get; set; }
     public string GroupName { get; set; } = "";
     public string ForwarderType { get; set; } = ""; // "DingTalk", "Feishu"

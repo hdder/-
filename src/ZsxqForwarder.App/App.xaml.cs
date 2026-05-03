@@ -1,4 +1,7 @@
 using System.IO;
+using System.Net;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Windows;
 using Serilog;
 using ZsxqForwarder.App.Views;
@@ -14,8 +17,9 @@ public partial class App : Application
 
     public App()
     {
-        // Use Windows native HTTP handler for proper SSL/TLS support
-        AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false);
+        // Force TLS 1.2+ and skip SSL cert validation globally
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+        ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, errors) => true;
 
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Directory.CreateDirectory(AppDataDir);
