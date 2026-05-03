@@ -792,8 +792,8 @@ public class TopicDisplay
     public string Type { get; }
     public string DisplayText { get; }
     public string AuthorName { get; }
-    public int LikesCount { get; }
-    public int CommentsCount { get; }
+    public int LikesCount { get; set; }
+    public int CommentsCount { get; set; }
     public bool Digested { get; }
     public DateTime CreatedAt { get; }
 
