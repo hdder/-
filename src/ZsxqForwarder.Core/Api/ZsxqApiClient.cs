@@ -20,7 +20,8 @@ public class ZsxqApiClient
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
             UseCookies = false,
-            SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+            SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
         };
 
         _httpClient = new HttpClient(handler)

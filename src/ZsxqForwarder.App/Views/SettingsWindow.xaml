@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="设置"
-        Width="550" Height="600"
+        Width="600" Height="620"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{StaticResource BackgroundBrush}">
@@ -32,11 +32,11 @@
                     </Grid>
 
                     <TextBlock Text="已添加的星球" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,8"/>
-                    <ListBox x:Name="GroupConfigList" Height="300"
+                    <ListBox x:Name="GroupConfigList" Height="320"
                              BorderBrush="{StaticResource BorderBrush}">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Width="420">
+                                <Grid Width="470">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
@@ -58,59 +58,67 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- Tab 2: 转发设置 -->
-            <TabItem Header="转发设置">
-                <ScrollViewer>
-                    <StackPanel Margin="12">
+            <!-- Tab 2: 转发规则 -->
+            <TabItem Header="转发规则">
+                <StackPanel Margin="12">
+                    <TextBlock Text="每条规则：从一个星球转发到一个机器人" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,12"/>
 
-                        <!-- DingTalk -->
-                        <Border Style="{StaticResource CardBorder}">
-                            <StackPanel>
-                                <CheckBox x:Name="DingTalkEnabled" Content="钉钉机器人" FontWeight="SemiBold" FontSize="14"/>
-                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="DingTalkWebhook" Margin="0,0,0,8"/>
-                                <TextBlock Text="加签密钥（可选）" FontSize="12" Margin="0,0,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="DingTalkSecret"/>
-                            </StackPanel>
-                        </Border>
+                    <!-- Add rule -->
+                    <Border Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Text="添加转发规则" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,8"/>
+                            <TextBlock Text="选择星球" FontSize="12" Margin="0,0,0,4"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox x:Name="RuleGroupCombo" Margin="0,0,0,8"
+                                      DisplayMemberPath="Name"/>
+                            <TextBlock Text="转发到" FontSize="12" Margin="0,0,0,4"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox x:Name="RuleForwarderType" Margin="0,0,0,8">
+                                <ComboBoxItem Content="钉钉" Tag="DingTalk"/>
+                                <ComboBoxItem Content="飞书" Tag="Feishu"/>
+                            </ComboBox>
+                            <TextBlock Text="Webhook URL" FontSize="12" Margin="0,0,0,4"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBox x:Name="RuleWebhookUrl" Margin="0,0,0,8"/>
+                            <TextBlock Text="加签密钥（仅钉钉需要）" FontSize="12" Margin="0,0,0,4"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBox x:Name="RuleSecret" Margin="0,0,0,8"/>
+                            <Button Content="添加规则" Padding="16,6" HorizontalAlignment="Left"
+                                    Click="OnAddRule"/>
+                        </StackPanel>
+                    </Border>
 
-                        <!-- Feishu -->
-                        <Border Style="{StaticResource CardBorder}">
-                            <StackPanel>
-                                <CheckBox x:Name="FeishuEnabled" Content="飞书机器人" FontWeight="SemiBold" FontSize="14"/>
-                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="FeishuWebhook"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Telegram (保留) -->
-                        <Border Style="{StaticResource CardBorder}">
-                            <StackPanel>
-                                <CheckBox x:Name="TelegramEnabled" Content="Telegram" FontWeight="SemiBold" FontSize="14"/>
-                                <TextBlock Text="Bot Token" FontSize="12" Margin="0,8,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="TelegramBotToken" Margin="0,0,0,8"/>
-                                <TextBlock Text="Chat ID" FontSize="12" Margin="0,0,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="TelegramChatId"/>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- WeChat (保留) -->
-                        <Border Style="{StaticResource CardBorder}">
-                            <StackPanel>
-                                <CheckBox x:Name="WechatEnabled" Content="企业微信" FontWeight="SemiBold" FontSize="14"/>
-                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="WechatWebhook"/>
-                            </StackPanel>
-                        </Border>
-
-                    </StackPanel>
-                </ScrollViewer>
+                    <TextBlock Text="已有规则" FontWeight="SemiBold" FontSize="13" Margin="0,12,0,8"/>
+                    <ListBox x:Name="ForwardRuleList" Height="180"
+                             BorderBrush="{StaticResource BorderBrush}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Width="470">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock FontSize="12">
+                                            <Run Text="{Binding GroupName}" FontWeight="Medium"/>
+                                            <Run Text=" → "/>
+                                            <Run Text="{Binding ForwarderType}"/>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding WebhookUrl}" FontSize="10"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <CheckBox Grid.Column="1" IsChecked="{Binding Enabled}"
+                                              VerticalAlignment="Center" Margin="4,0"/>
+                                    <Button Grid.Column="1" Content="删除" FontSize="10"
+                                            Padding="6,2" Margin="40,0,0,0"
+                                            Click="OnRemoveRule" Tag="{Binding GroupId}"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </StackPanel>
             </TabItem>
 
             <!-- Tab 3: 监控设置 -->

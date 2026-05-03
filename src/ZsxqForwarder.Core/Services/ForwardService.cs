@@ -12,6 +12,8 @@ public interface IForwarder
 public class ForwardService
 {
     private readonly List<IForwarder> _forwarders = [];
+    private List<ForwardRule> _rules = [];
+    private Func<ForwardRule, IForwarder?>? _forwarderFactory;
 
     public IReadOnlyList<IForwarder> Forwarders => _forwarders.AsReadOnly();
 
@@ -25,11 +27,40 @@ public class ForwardService
         _forwarders.RemoveAll(f => f.Name == name);
     }
 
-    public async Task ForwardAsync(Topic topic)
+    public void SetRules(List<ForwardRule> rules)
     {
-        var enabledForwarders = _forwarders.Where(f => f.IsEnabled).ToList();
-        var tasks = enabledForwarders.Select(f => ForwardWithRetryAsync(f, topic));
-        await Task.WhenAll(tasks);
+        _rules = rules;
+    }
+
+    public void SetForwarderFactory(Func<ForwardRule, IForwarder?> factory)
+    {
+        _forwarderFactory = factory;
+    }
+
+    public async Task ForwardAsync(Topic topic, long groupId)
+    {
+        var matchingRules = _rules.Where(r =>
+            r.GroupId == groupId && r.Enabled && !string.IsNullOrEmpty(r.WebhookUrl)).ToList();
+
+        if (matchingRules.Count > 0 && _forwarderFactory != null)
+        {
+            var tasks = new List<Task>();
+            foreach (var rule in matchingRules)
+            {
+                var forwarder = _forwarderFactory(rule);
+                if (forwarder != null)
+                    tasks.Add(ForwardWithRetryAsync(forwarder, topic));
+            }
+            if (tasks.Count > 0)
+            {
+                await Task.WhenAll(tasks);
+                return;
+            }
+        }
+
+        // Fallback: all enabled forwarders
+        var enabled = _forwarders.Where(f => f.IsEnabled).ToList();
+        await Task.WhenAll(enabled.Select(f => ForwardWithRetryAsync(f, topic)));
     }
 
     private static async Task ForwardWithRetryAsync(IForwarder forwarder, Topic topic)

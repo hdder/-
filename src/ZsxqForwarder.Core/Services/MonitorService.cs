@@ -88,7 +88,7 @@ public class MonitorService : IDisposable
                                 NewTopicDetected?.Invoke(this, new NewTopicEventArgs { Topic = topic, GroupId = groupId });
 
                                 // Auto-forward
-                                await _forwardService.ForwardAsync(topic);
+                                await _forwardService.ForwardAsync(topic, groupId);
                             }
                         }
                     }

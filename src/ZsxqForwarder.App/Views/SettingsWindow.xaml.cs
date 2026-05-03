@@ -1,8 +1,8 @@
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 using ZsxqForwarder.Core.Models;
 using ZsxqForwarder.Core.Services;
-using ZsxqForwarder.Forwarders;
 
 namespace ZsxqForwarder.App.Views;
 
@@ -29,21 +29,10 @@ public partial class SettingsWindow : Window
 
         // Groups
         GroupConfigList.ItemsSource = s.Groups.ToList();
+        RuleGroupCombo.ItemsSource = s.Groups.ToList();
 
-        // Forwarders
-        DingTalkEnabled.IsChecked = s.DingTalk.Enabled;
-        DingTalkWebhook.Text = s.DingTalk.WebhookUrl;
-        DingTalkSecret.Text = s.DingTalk.Secret;
-
-        FeishuEnabled.IsChecked = s.Feishu.Enabled;
-        FeishuWebhook.Text = s.Feishu.WebhookUrl;
-
-        TelegramEnabled.IsChecked = s.Telegram.Enabled;
-        TelegramBotToken.Text = s.Telegram.BotToken;
-        TelegramChatId.Text = s.Telegram.ChatId;
-
-        WechatEnabled.IsChecked = s.Wechat.Enabled;
-        WechatWebhook.Text = s.Wechat.WebhookUrl;
+        // Forward rules
+        ForwardRuleList.ItemsSource = s.ForwardRules.ToList();
 
         // Monitor
         MonitorInterval.Value = s.Monitor.IntervalSeconds;
@@ -52,10 +41,15 @@ public partial class SettingsWindow : Window
         LoginStatus.Text = _authService.IsLoggedIn ? "已登录" : "未登录";
     }
 
+    // Group management
     private void OnAddGroup(object sender, RoutedEventArgs e)
     {
-        var input = GroupUrlInput.Text.Trim();
-        if (string.IsNullOrEmpty(input)) return;
+        var input = GroupUrlInput.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(input))
+        {
+            MessageBox.Show("请输入星球URL或ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         var groupId = ParseGroupIdFromUrl(input);
         if (groupId == null)
@@ -65,7 +59,6 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // Check duplicate
         if (_settingsService.Settings.Groups.Any(g => g.GroupId == groupId.Value))
         {
             MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -81,45 +74,86 @@ public partial class SettingsWindow : Window
 
         _settingsService.Settings.Groups.Add(groupConfig);
         _settingsService.Save();
-        GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
-
+        RefreshLists();
         GroupUrlInput.Text = "";
     }
 
     private void OnRemoveGroup(object sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.Button btn) return;
+        if (sender is not Button btn) return;
         if (btn.Tag is not long groupId) return;
 
         var group = _settingsService.Settings.Groups.FirstOrDefault(g => g.GroupId == groupId);
         if (group != null)
         {
             _settingsService.Settings.Groups.Remove(group);
+            // Also remove related rules
+            _settingsService.Settings.ForwardRules.RemoveAll(r => r.GroupId == groupId);
             _settingsService.Save();
-            GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
+            RefreshLists();
+        }
+    }
+
+    // Forward rules
+    private void OnAddRule(object sender, RoutedEventArgs e)
+    {
+        if (RuleGroupCombo.SelectedItem is not GroupConfig group)
+        {
+            MessageBox.Show("请选择星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var forwarderItem = RuleForwarderType.SelectedItem as ComboBoxItem;
+        var forwarderType = forwarderItem?.Tag?.ToString();
+        if (string.IsNullOrEmpty(forwarderType))
+        {
+            MessageBox.Show("请选择转发类型", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var webhook = RuleWebhookUrl.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(webhook))
+        {
+            MessageBox.Show("请输入Webhook URL", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var rule = new ForwardRule
+        {
+            GroupId = group.GroupId,
+            GroupName = group.Name,
+            ForwarderType = forwarderType,
+            WebhookUrl = webhook,
+            Secret = RuleSecret.Text?.Trim() ?? "",
+            Enabled = true
+        };
+
+        _settingsService.Settings.ForwardRules.Add(rule);
+        _settingsService.Save();
+        RefreshLists();
+
+        RuleWebhookUrl.Text = "";
+        RuleSecret.Text = "";
+    }
+
+    private void OnRemoveRule(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn) return;
+        if (btn.Tag is not long groupId) return;
+
+        // Find the rule - since Tag is GroupId, remove the first matching rule for this group
+        var rule = _settingsService.Settings.ForwardRules.FirstOrDefault(r => r.GroupId == groupId);
+        if (rule != null)
+        {
+            _settingsService.Settings.ForwardRules.Remove(rule);
+            _settingsService.Save();
+            RefreshLists();
         }
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
         var s = _settingsService.Settings;
-
-        // Forwarders
-        s.DingTalk.Enabled = DingTalkEnabled.IsChecked == true;
-        s.DingTalk.WebhookUrl = DingTalkWebhook.Text.Trim();
-        s.DingTalk.Secret = DingTalkSecret.Text.Trim();
-
-        s.Feishu.Enabled = FeishuEnabled.IsChecked == true;
-        s.Feishu.WebhookUrl = FeishuWebhook.Text.Trim();
-
-        s.Telegram.Enabled = TelegramEnabled.IsChecked == true;
-        s.Telegram.BotToken = TelegramBotToken.Text.Trim();
-        s.Telegram.ChatId = TelegramChatId.Text.Trim();
-
-        s.Wechat.Enabled = WechatEnabled.IsChecked == true;
-        s.Wechat.WebhookUrl = WechatWebhook.Text.Trim();
-
-        // Monitor
         s.Monitor.IntervalSeconds = (int)MonitorInterval.Value;
 
         _settingsService.Save();
@@ -146,6 +180,13 @@ public partial class SettingsWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Application.Current.Shutdown();
         }
+    }
+
+    private void RefreshLists()
+    {
+        GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
+        RuleGroupCombo.ItemsSource = _settingsService.Settings.Groups.ToList();
+        ForwardRuleList.ItemsSource = _settingsService.Settings.ForwardRules.ToList();
     }
 
     private static long? ParseGroupIdFromUrl(string url)

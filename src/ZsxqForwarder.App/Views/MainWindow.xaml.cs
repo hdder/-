@@ -1,11 +1,7 @@
 using System.IO;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Windows;
-using System.Windows.Input;
-using Microsoft.Win32;
 using Serilog;
 using ZsxqForwarder.Core.Api;
 using ZsxqForwarder.Core.Models;
@@ -65,22 +61,27 @@ public partial class MainWindow : Window
     private void ApplyForwarderSettings()
     {
         var s = _settingsService.Settings;
+        _forwardService.SetRules(s.ForwardRules);
+        _forwardService.SetForwarderFactory(rule => rule.ForwarderType switch
+        {
+            "DingTalk" => CreateDingTalk(rule),
+            "Feishu" => CreateFeishu(rule),
+            _ => null
+        });
+    }
 
-        var dingTalk = new DingTalkForwarder { IsEnabled = s.DingTalk.Enabled };
-        dingTalk.Configure(s.DingTalk.WebhookUrl, s.DingTalk.Secret);
-        _forwardService.RegisterForwarder(dingTalk);
+    private static IForwarder CreateDingTalk(ForwardRule rule)
+    {
+        var f = new DingTalkForwarder { IsEnabled = true };
+        f.Configure(rule.WebhookUrl, rule.Secret);
+        return f;
+    }
 
-        var feishu = new FeishuForwarder { IsEnabled = s.Feishu.Enabled };
-        feishu.Configure(s.Feishu.WebhookUrl);
-        _forwardService.RegisterForwarder(feishu);
-
-        var telegram = new TelegramForwarder { IsEnabled = s.Telegram.Enabled };
-        telegram.Configure(s.Telegram.BotToken, s.Telegram.ChatId);
-        _forwardService.RegisterForwarder(telegram);
-
-        var wechat = new WechatForwarder { IsEnabled = s.Wechat.Enabled };
-        wechat.Configure(s.Wechat.WebhookUrl);
-        _forwardService.RegisterForwarder(wechat);
+    private static IForwarder CreateFeishu(ForwardRule rule)
+    {
+        var f = new FeishuForwarder { IsEnabled = true };
+        f.Configure(rule.WebhookUrl);
+        return f;
     }
 
     private void RefreshGroupList()
