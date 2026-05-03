@@ -41,7 +41,7 @@ public partial class MainWindow : Window
 
         _forwardService = new ForwardService();
         _forwardService.SetDatabase(_db);
-        _imageHosting = new ImageHostingService(_db, _db.GetImagesDir(), _db.GetImageServerPort(), _db.GetImagePublicHost());
+        _imageHosting = new ImageHostingService(_db, DatabaseService.GetImagesDir(), _db.GetImageServerPort(), _db.GetImagePublicHost());
         _imageHosting.Start();
         _forwardService.SetImageHosting(_imageHosting);
         ApplyForwarderSettings();
