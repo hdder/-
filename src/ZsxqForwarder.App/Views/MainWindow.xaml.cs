@@ -112,146 +112,53 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Fetch dynamics API by intercepting the page's own API calls.
-    /// Strategy:
-    /// 1. Install a fetch+XHR hook that captures both headers and response bodies
-    /// 2. Reload the page so the hook is active when the page makes its API calls
-    /// 3. Read the captured dynamics response directly
-    /// 4. For pagination, reuse captured headers with updated timestamp
+    /// Extract dynamics data from the wx.zsxq.com page DOM.
+    /// Strategy: Navigate to wx.zsxq.com, wait for render, then extract posts from the DOM.
     /// </summary>
     private async Task<string> FetchDynamicsAsync(string url)
     {
-        // Step 1: Check if we already have captured dynamics data from a previous page load
-        var captured = await ReadCapturedResponseAsync();
-        if (captured != null)
+        Log.Information("Fetching dynamics from DOM");
+
+        // Navigate to wx.zsxq.com home page (timeline)
+        var currentUrl = await _webView.CoreWebView2.ExecuteScriptAsync("location.href");
+        var needsNavigation = currentUrl == null || !currentUrl.Contains("wx.zsxq.com");
+
+        if (needsNavigation)
         {
-            Log.Information("Using previously captured dynamics data");
-            return captured;
+            await NavigateAndWaitAsync("https://wx.zsxq.com/", 4000);
+        }
+        else
+        {
+            // Already on the page, reload to get fresh data
+            await ReloadAndWaitAsync();
         }
 
-        // Step 2: Install the hook (idempotent) and reload page
-        Log.Information("Installing API hook and reloading page to capture dynamics");
-        await EnsureHookInstalledAsync();
-        await ReloadAndWaitAsync();
-
-        // Step 3: Check if the page's own dynamics call was captured
-        captured = await ReadCapturedResponseAsync();
-        if (captured != null)
+        // Extract dynamics data from the rendered DOM
+        var extracted = await ExtractDynamicsFromDomAsync();
+        if (extracted != null)
         {
-            Log.Information("Captured dynamics from page load ({Len} chars)", captured.Length);
-            return captured;
+            Log.Information("Extracted {Len} chars of dynamics data from DOM", extracted.Length);
+            return extracted;
         }
 
-        // Step 4: If we have headers but no captured response, try making our own request
-        var hasHeaders = await EvaluateBoolAsync("window.__zsxqHeaders != null");
-        if (hasHeaders)
-        {
-            Log.Information("Headers captured, making direct dynamics request");
-            var text = await FetchWithCapturedHeadersAsync(url);
-            if (text != null) return text;
-        }
-
-        // Step 5: Last resort - dump page state for debugging
-        var debugInfo = await _webView.CoreWebView2.ExecuteScriptAsync(@"
-            JSON.stringify({
-                hasHook: window.__zsxqHookInstalled,
-                hasHeaders: window.__zsxqHeaders != null,
-                hasResponse: window.__dynamicsResponse != null,
-                headerKeys: window.__zsxqHeaders ? Object.keys(window.__zsxqHeaders) : [],
-                url: location.href
-            })");
-        Log.Error("Dynamics fetch failed. Page state: {State}", debugInfo);
-
-        throw new Exception($"无法获取 dynamics 数据。调试信息: {debugInfo}");
+        throw new Exception("无法从页面提取动态数据");
     }
 
-    /// <summary>
-    /// Install fetch + XHR hooks that capture API headers AND response bodies.
-    /// Uses CoreWebView2.AddScriptToExecuteOnDocumentCreated to persist across navigations.
-    /// </summary>
-    private async Task EnsureHookInstalledAsync()
+    private async Task NavigateAndWaitAsync(string url, int waitMs = 3000)
     {
-        // Use AddScriptToExecuteOnDocumentCreated so the hook survives page reloads
-        var hookJs = @"
-            window.__zsxqHookInstalled = true;
-            window.__zsxqHeaders = null;
-            window.__dynamicsResponse = null;
+        var tcs = new TaskCompletionSource<bool>();
+        void handler(object? s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+        {
+            tcs.TrySetResult(e.IsSuccess);
+        }
+        _webView.CoreWebView2.NavigationCompleted += handler;
+        _webView.CoreWebView2.Navigate(url);
 
-            // Hook fetch
-            const origFetch = window.fetch;
-            window.fetch = async function(...args) {
-                const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-                const opts = args[1] || {};
-                const headers = opts.headers || {};
+        var success = await tcs.Task;
+        _webView.CoreWebView2.NavigationCompleted -= handler;
 
-                // Capture headers from any api.zsxq.com request
-                if (url && url.includes('api.zsxq.com')) {
-                    try {
-                        let h = {};
-                        if (headers instanceof Headers) {
-                            headers.forEach((v, k) => { h[k] = v; });
-                        } else if (typeof headers === 'object') {
-                            h = {...headers};
-                        }
-                        const keys = Object.keys(h);
-                        if (keys.length > 0) {
-                            window.__zsxqHeaders = h;
-                        }
-                    } catch(e) {}
-                }
-
-                const resp = await origFetch.apply(this, args);
-
-                // Capture dynamics response body
-                if (url && url.includes('/v2/dynamics')) {
-                    try {
-                        const cloned = resp.clone();
-                        const text = await cloned.text();
-                        window.__dynamicsResponse = text;
-                    } catch(e) {}
-                }
-
-                return resp;
-            };
-
-            // Hook XMLHttpRequest as well
-            const origXHROpen = XMLHttpRequest.prototype.open;
-            const origXHRSend = XMLHttpRequest.prototype.send;
-            const origXHRSetHeader = XMLHttpRequest.prototype.setRequestHeader;
-
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this.__url = url;
-                this.__headers = {};
-                return origXHROpen.apply(this, arguments);
-            };
-
-            XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-                if (this.__headers) this.__headers[name] = value;
-                return origXHRSetHeader.apply(this, arguments);
-            };
-
-            XMLHttpRequest.prototype.send = function() {
-                if (this.__url && this.__url.includes('api.zsxq.com')) {
-                    const h = {...this.__headers};
-                    if (Object.keys(h).length > 0) {
-                        window.__zsxqHeaders = h;
-                    }
-
-                    // Capture response for dynamics
-                    if (this.__url.includes('/v2/dynamics')) {
-                        this.addEventListener('load', function() {
-                            try { window.__dynamicsResponse = this.responseText; } catch(e) {}
-                        });
-                    }
-                }
-                return origXHRSend.apply(this, arguments);
-            };
-        ";
-
-        await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(hookJs);
-
-        // Also inject immediately in case the page is already loaded
-        await _webView.CoreWebView2.ExecuteScriptAsync(hookJs);
+        if (success)
+            await Task.Delay(waitMs);
     }
 
     private async Task ReloadAndWaitAsync()
@@ -268,14 +175,146 @@ public partial class MainWindow : Window
         _webView.CoreWebView2.NavigationCompleted -= handler;
 
         if (success)
-            await Task.Delay(3000); // Wait for page JS + API calls to complete
+            await Task.Delay(3000);
     }
 
-    private async Task<string?> ReadCapturedResponseAsync()
+    /// <summary>
+    /// Extract dynamics data from the page's DOM or internal state.
+    /// Tries multiple extraction strategies:
+    /// 1. __NEXT_DATA__ (Next.js SSR data)
+    /// 2. React fiber tree (internal React state)
+    /// 3. Direct DOM scraping of post elements
+    /// </summary>
+    private async Task<string?> ExtractDynamicsFromDomAsync()
     {
-        var result = await _webView.CoreWebView2.ExecuteScriptAsync(
-            "window.__dynamicsResponse != null ? window.__dynamicsResponse : null");
+        var js = @"
+            (() => {
+                try {
+                    // Strategy 1: __NEXT_DATA__
+                    const nd = window.__NEXT_DATA__;
+                    if (nd) {
+                        // Search recursively for dynamics-like arrays
+                        const found = findDynamics(nd);
+                        if (found && found.length > 0) {
+                            return wrapResult(found);
+                        }
+                    }
 
+                    // Strategy 2: __NEXT_DATA__ script tag
+                    const ndEl = document.getElementById('__NEXT_DATA__');
+                    if (ndEl && ndEl.textContent) {
+                        const parsed = JSON.parse(ndEl.textContent);
+                        const found = findDynamics(parsed);
+                        if (found && found.length > 0) {
+                            return wrapResult(found);
+                        }
+                    }
+
+                    // Strategy 3: Search all global variables for dynamics
+                    for (const key of Object.keys(window)) {
+                        try {
+                            const val = window[key];
+                            if (val && typeof val === 'object' && !Array.isArray(val)) {
+                                const found = findDynamics(val);
+                                if (found && found.length > 0) {
+                                    return wrapResult(found);
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    // Strategy 4: Scrape DOM directly
+                    return scrapeDom();
+                } catch(e) {
+                    return JSON.stringify({error: e.message});
+                }
+
+                function findDynamics(obj, depth) {
+                    depth = depth || 0;
+                    if (depth > 5 || !obj || typeof obj !== 'object') return null;
+
+                    // Look for arrays that contain objects with dynamic_id or topic_id
+                    if (Array.isArray(obj)) {
+                        if (obj.length > 0 && obj[0]) {
+                            if (obj[0].dynamic_id || obj[0].topic_id) return obj;
+                            // Check nested .topic property
+                            if (obj[0].topic && obj[0].topic.topic_id) return obj;
+                        }
+                        return null;
+                    }
+
+                    // Recurse into object values
+                    for (const key of Object.keys(obj)) {
+                        try {
+                            const result = findDynamics(obj[key], depth + 1);
+                            if (result && result.length > 0) return result;
+                        } catch(e) {}
+                    }
+                    return null;
+                }
+
+                function scrapeDom() {
+                    // Try to find post elements and extract data
+                    const items = [];
+                    // Common selectors for zsxq post containers
+                    const selectors = [
+                        '[class*=""feed-item""]',
+                        '[class*=""topic-item""]',
+                        '[class*=""post""]',
+                        '[class*=""card""]',
+                        'article',
+                        '[class*=""dynamics""]',
+                        '[class*=""stream""]'
+                    ];
+
+                    for (const sel of selectors) {
+                        const els = document.querySelectorAll(sel);
+                        if (els.length > 0) {
+                            // Found post elements, try to extract data from their React props
+                            for (const el of els) {
+                                const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+                                if (fiberKey) {
+                                    let fiber = el[fiberKey];
+                                    // Walk up the fiber tree to find props with topic data
+                                    for (let i = 0; i < 10 && fiber; i++) {
+                                        const props = fiber.memoizedProps || fiber.pendingProps;
+                                        if (props) {
+                                            const topic = props.topic || props.data || props.item;
+                                            if (topic && (topic.topic_id || topic.dynamic_id)) {
+                                                items.push(topic);
+                                                break;
+                                            }
+                                        }
+                                        fiber = fiber.return;
+                                    }
+                                }
+                            }
+                            if (items.length > 0) break;
+                        }
+                    }
+                    return items.length > 0 ? wrapResult(items) : null;
+                }
+
+                function wrapResult(dynamics) {
+                    // Ensure each item has the expected structure
+                    const items = dynamics.map(d => {
+                        if (d.topic_id) {
+                            // Already a topic-like object, wrap in dynamic structure
+                            return {
+                                dynamic_id: d.dynamic_id || d.topic_id,
+                                action: 'create_topic',
+                                create_time: d.create_time || new Date().toISOString(),
+                                topic: d,
+                                group: d.group || null
+                            };
+                        }
+                        return d;
+                    });
+                    return JSON.stringify({succeeded: true, resp_data: {dynamics: items, is_end: true}});
+                }
+            })()";
+
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
         if (string.IsNullOrEmpty(result) || result.Trim() == "null")
             return null;
 
@@ -283,46 +322,10 @@ public partial class MainWindow : Window
             ? JsonConvert.DeserializeObject<string>(result) ?? result
             : result;
 
-        if (text.Contains("\"succeeded\""))
-            return text;
-
-        return null;
-    }
-
-    private async Task<string?> FetchWithCapturedHeadersAsync(string url)
-    {
-        var escapedUrl = url.Replace("'", "\\'").Replace("\"", "\\\"");
-        var js = $@"
-            (async () => {{
-                try {{
-                    const h = window.__zsxqHeaders || {{}};
-                    const ts = Math.floor(Date.now() / 1000).toString();
-                    const headers = {{...h, 'Accept': 'application/json'}};
-                    if (h['x-timestamp']) headers['x-timestamp'] = ts;
-
-                    const resp = await fetch('{escapedUrl}', {{
-                        credentials: 'include',
-                        headers: headers
-                    }});
-                    if (!resp.ok) return JSON.stringify({{ error: 'HTTP ' + resp.status }});
-                    const text = await resp.text();
-                    if (text.includes('""succeeded""')) return text;
-                    return JSON.stringify({{ error: 'API returned non-success', detail: text.substring(0, 300) }});
-                }} catch(e) {{
-                    return JSON.stringify({{ error: e.message }});
-                }}
-            }})()";
-
-        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
-        if (string.IsNullOrEmpty(result)) return null;
-
-        var text = result.StartsWith("\"")
-            ? JsonConvert.DeserializeObject<string>(result) ?? result
-            : result;
-
         if (text.Contains("\"succeeded\"")) return text;
+        if (text.Contains("\"error\""))
+            Log.Warning("DOM extraction error: {Text}", text);
 
-        Log.Warning("FetchWithCapturedHeaders failed: {Text}", text);
         return null;
     }
 
