@@ -121,13 +121,13 @@ public partial class MainWindow : Window
     {
         Log.Information("Fetching dynamics by iterating group pages");
 
-        // Step 1: Navigate to any wx.zsxq.com page to get sidebar
+        // Step 1: Ensure we're on a zsxq page with sidebar
         var currentUrl = await _webView.CoreWebView2.ExecuteScriptAsync("location.href");
         var onZsxq = currentUrl != null && currentUrl.Contains("wx.zsxq.com");
 
         if (!onZsxq)
         {
-            // Navigate to the first group page
+            // Any zsxq page has the sidebar; use /dynamics as landing
             await NavigateAndWaitAsync("https://wx.zsxq.com/dynamics", 4000);
         }
 
@@ -160,42 +160,47 @@ public partial class MainWindow : Window
 
         Log.Information("Found {Count} groups in sidebar", groupList.Count);
 
-        // Step 3: Visit each group page and extract topics
+        // Step 3: Check if current page is already a group page — extract from it first
         var allDynamics = new List<object>();
         var allGroups = new List<object>();
+        var currentPath = await _webView.CoreWebView2.ExecuteScriptAsync("location.pathname");
+        var currentPathClean = currentPath?.Trim('"') ?? "";
 
         foreach (var group in groupList)
         {
-            Log.Information("Scraping group: {Name} ({Id})", group.name, group.group_id);
+            allGroups.Add(new { group_id = group.group_id, name = group.name, avatar_url = "", background_url = "" });
 
+            // If already on this group's page, extract without navigating
+            if (currentPathClean == group.href)
+            {
+                Log.Information("Scraping group (current page): {Name} ({Id})", group.name, group.group_id);
+                var pageJson = await ExtractTopicsFromCurrentPageAsync(group.group_id, group.name);
+                if (pageJson != null)
+                {
+                    var pageData = JsonConvert.DeserializeObject<PageExtractResult>(pageJson);
+                    if (pageData?.dynamics != null)
+                        allDynamics.AddRange(pageData.dynamics);
+                    Log.Information("  Extracted {Count} topics from {Name}",
+                        pageData?.dynamics?.Count ?? 0, group.name);
+                }
+                continue;
+            }
+
+            // Navigate to group page
+            Log.Information("Scraping group: {Name} ({Id})", group.name, group.group_id);
             var groupUrl = $"https://wx.zsxq.com{group.href}";
             await NavigateAndWaitAsync(groupUrl, 4000);
 
-            var pageJson = await ExtractTopicsFromCurrentPageAsync(group.group_id, group.name);
-            if (pageJson != null)
+            var pageJson2 = await ExtractTopicsFromCurrentPageAsync(group.group_id, group.name);
+            if (pageJson2 != null)
             {
-                var pageData = JsonConvert.DeserializeObject<PageExtractResult>(pageJson);
-                if (pageData?.dynamics != null)
-                    allDynamics.AddRange(pageData.dynamics);
-
+                var pageData2 = JsonConvert.DeserializeObject<PageExtractResult>(pageJson2);
+                if (pageData2?.dynamics != null)
+                    allDynamics.AddRange(pageData2.dynamics);
                 Log.Information("  Extracted {Count} topics from {Name}",
-                    pageData?.dynamics?.Count ?? 0, group.name);
+                    pageData2?.dynamics?.Count ?? 0, group.name);
             }
-
-            allGroups.Add(new { group_id = group.group_id, name = group.name, avatar_url = "", background_url = "" });
         }
-
-        if (allDynamics.Count == 0)
-            throw new Exception("所有星球页面均未提取到动态数据");
-
-        var result = new
-        {
-            succeeded = true,
-            resp_data = new
-            {
-                dynamics = allDynamics,
-                groups = allGroups,
-                is_end = true
             }
         };
 
