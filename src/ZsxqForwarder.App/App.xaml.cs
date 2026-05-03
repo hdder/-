@@ -14,6 +14,7 @@ public partial class App : Application
 
     public App()
     {
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Directory.CreateDirectory(AppDataDir);
 
         Log.Logger = new LoggerConfiguration()
@@ -54,10 +55,18 @@ public partial class App : Application
             var loginWindow = new LoginWindow();
             loginWindow.ShowDialog();
 
+            Log.Information("Login finished. Succeeded={Succeeded}", loginWindow.LoginSucceeded);
+
             if (loginWindow.LoginSucceeded)
             {
                 var mainWindow = new MainWindow(loginWindow.AccessToken!, settingsService);
+                mainWindow.Closed += (s, args) =>
+                {
+                    Log.Information("MainWindow closed, shutting down");
+                    Shutdown();
+                };
                 mainWindow.Show();
+                Log.Information("MainWindow shown successfully");
             }
             else
             {
