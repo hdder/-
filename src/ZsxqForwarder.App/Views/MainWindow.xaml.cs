@@ -201,6 +201,18 @@ public partial class MainWindow : Window
                     pageData2?.dynamics?.Count ?? 0, group.name);
             }
         }
+
+        if (allDynamics.Count == 0)
+            throw new Exception("所有星球页面均未提取到动态数据");
+
+        var result = new
+        {
+            succeeded = true,
+            resp_data = new
+            {
+                dynamics = allDynamics,
+                groups = allGroups,
+                is_end = true
             }
         };
 
