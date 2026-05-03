@@ -2,25 +2,91 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="设置"
-        Width="500" Height="550"
+        Width="550" Height="600"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{StaticResource BackgroundBrush}">
 
-    <Grid Margin="24">
+    <Grid Margin="20">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Tabs -->
-        <TabControl Grid.Row="1">
-            <!-- Forwarders Tab -->
+        <TabControl Grid.Row="0">
+
+            <!-- Tab 1: 星球管理 -->
+            <TabItem Header="星球管理">
+                <StackPanel Margin="12">
+                    <TextBlock Text="添加星球" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,8"/>
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="GroupUrlInput" Grid.Column="0"
+                                 ToolTip="输入星球URL或ID"
+                                 Margin="0,0,4,0"/>
+                        <Button Grid.Column="1" Content="添加" Padding="16,6"
+                                Click="OnAddGroup"/>
+                    </Grid>
+
+                    <TextBlock Text="已添加的星球" FontWeight="SemiBold" FontSize="13" Margin="0,0,0,8"/>
+                    <ListBox x:Name="GroupConfigList" Height="300"
+                             BorderBrush="{StaticResource BorderBrush}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Width="420">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Name}" FontWeight="Medium" FontSize="13"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock FontSize="11" Foreground="{StaticResource TextSecondaryBrush}">
+                                            <Run Text="ID: "/><Run Text="{Binding GroupId}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="删除" FontSize="11"
+                                            Padding="8,4" Margin="4,0,0,0"
+                                            Click="OnRemoveGroup" Tag="{Binding GroupId}"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </StackPanel>
+            </TabItem>
+
+            <!-- Tab 2: 转发设置 -->
             <TabItem Header="转发设置">
                 <ScrollViewer>
                     <StackPanel Margin="12">
-                        <!-- Telegram -->
+
+                        <!-- DingTalk -->
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <CheckBox x:Name="DingTalkEnabled" Content="钉钉机器人" FontWeight="SemiBold" FontSize="14"/>
+                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
+                                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox x:Name="DingTalkWebhook" Margin="0,0,0,8"/>
+                                <TextBlock Text="加签密钥（可选）" FontSize="12" Margin="0,0,0,4"
+                                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox x:Name="DingTalkSecret"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Feishu -->
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <CheckBox x:Name="FeishuEnabled" Content="飞书机器人" FontWeight="SemiBold" FontSize="14"/>
+                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
+                                           Foreground="{StaticResource TextSecondaryBrush}"/>
+                                <TextBox x:Name="FeishuWebhook"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Telegram (保留) -->
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <CheckBox x:Name="TelegramEnabled" Content="Telegram" FontWeight="SemiBold" FontSize="14"/>
@@ -33,7 +99,7 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- WeChat -->
+                        <!-- WeChat (保留) -->
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <CheckBox x:Name="WechatEnabled" Content="企业微信" FontWeight="SemiBold" FontSize="14"/>
@@ -43,20 +109,11 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Feishu -->
-                        <Border Style="{StaticResource CardBorder}">
-                            <StackPanel>
-                                <CheckBox x:Name="FeishuEnabled" Content="飞书" FontWeight="SemiBold" FontSize="14"/>
-                                <TextBlock Text="Webhook URL" FontSize="12" Margin="0,8,0,4"
-                                           Foreground="{StaticResource TextSecondaryBrush}"/>
-                                <TextBox x:Name="FeishuWebhook"/>
-                            </StackPanel>
-                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <!-- Monitor Tab -->
+            <!-- Tab 3: 监控设置 -->
             <TabItem Header="监控设置">
                 <StackPanel Margin="12">
                     <TextBlock Text="轮询间隔（秒）" FontSize="13" Margin="0,0,0,4"/>
@@ -67,7 +124,7 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- Account Tab -->
+            <!-- Tab 4: 账号 -->
             <TabItem Header="账号">
                 <StackPanel Margin="12">
                     <TextBlock Text="当前登录状态" FontSize="13" Margin="0,0,0,8"/>
@@ -76,10 +133,11 @@
                             Click="OnLogout" HorizontalAlignment="Left"/>
                 </StackPanel>
             </TabItem>
+
         </TabControl>
 
         <!-- Bottom Buttons -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Content="取消" Click="OnCancel" Padding="16,6" Margin="0,0,8,0">
                 <Button.Style>
                     <Style TargetType="Button">

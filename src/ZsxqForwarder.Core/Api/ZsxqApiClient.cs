@@ -62,7 +62,7 @@ public class ZsxqApiClient
     }
 
     public async Task<(List<Topic> Topics, bool IsEnd)> GetTopicsAsync(
-        int groupId, int count = 20, bool backward = true, long? endTime = null)
+        long groupId, int count = 20, bool backward = true, long? endTime = null)
     {
         var path = $"/v2/groups/{groupId}/topics";
         var businessParams = new Dictionary<string, string>

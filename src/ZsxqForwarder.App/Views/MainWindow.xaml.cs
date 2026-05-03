@@ -2,6 +2,7 @@ using System.IO;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using Microsoft.Win32;
@@ -21,72 +22,153 @@ public partial class MainWindow : Window
     private readonly MonitorService _monitorService;
     private readonly ForwardService _forwardService;
     private readonly AuthService _authService;
+    private readonly SettingsService _settingsService;
 
-    private ObservableCollection<Group> _groups = [];
+    private ObservableCollection<GroupConfig> _groups = [];
     private ObservableCollection<TopicDisplay> _topics = [];
     private List<Topic> _rawTopics = [];
-    private Group? _selectedGroup;
+    private GroupConfig? _selectedGroup;
     private long? _lastEndTime;
     private bool _hasMoreTopics = true;
     private CancellationTokenSource? _exportCts;
     private CancellationTokenSource? _monitorCts;
 
-    public MainWindow(string accessToken)
+    public MainWindow(string accessToken, SettingsService settingsService)
     {
         InitializeComponent();
 
+        _settingsService = settingsService;
         _apiClient = new ZsxqApiClient();
         _apiClient.SetAccessToken(accessToken);
         _topicService = new TopicService(_apiClient);
         _exportService = new ExportService(_topicService);
-        _forwardService = new ForwardService();
-        _monitorService = new MonitorService(_topicService, _forwardService);
         _authService = new AuthService();
         _authService.SaveToken(accessToken);
 
-        // Setup forwarders
-        _forwardService.RegisterForwarder(new TelegramForwarder());
-        _forwardService.RegisterForwarder(new WechatForwarder());
-        _forwardService.RegisterForwarder(new FeishuForwarder());
+        // Setup forwarders from settings
+        _forwardService = new ForwardService();
+        ApplyForwarderSettings();
 
-        // Setup monitor events
+        // Setup monitor
+        _monitorService = new MonitorService(_topicService, _forwardService);
+        _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
 
-        _ = LoadGroupsAsync();
+        // Load groups from settings
+        RefreshGroupList();
 
-        // Set default export dir
-        ExportDir.Text = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "ZsxqExport");
+        // Try to enrich group names from API
+        _ = EnrichGroupNamesAsync();
     }
 
-    private async Task LoadGroupsAsync()
+    private void ApplyForwarderSettings()
+    {
+        var s = _settingsService.Settings;
+
+        var dingTalk = new DingTalkForwarder { IsEnabled = s.DingTalk.Enabled };
+        dingTalk.Configure(s.DingTalk.WebhookUrl, s.DingTalk.Secret);
+        _forwardService.RegisterForwarder(dingTalk);
+
+        var feishu = new FeishuForwarder { IsEnabled = s.Feishu.Enabled };
+        feishu.Configure(s.Feishu.WebhookUrl);
+        _forwardService.RegisterForwarder(feishu);
+
+        var telegram = new TelegramForwarder { IsEnabled = s.Telegram.Enabled };
+        telegram.Configure(s.Telegram.BotToken, s.Telegram.ChatId);
+        _forwardService.RegisterForwarder(telegram);
+
+        var wechat = new WechatForwarder { IsEnabled = s.Wechat.Enabled };
+        wechat.Configure(s.Wechat.WebhookUrl);
+        _forwardService.RegisterForwarder(wechat);
+    }
+
+    private void RefreshGroupList()
+    {
+        _groups = new ObservableCollection<GroupConfig>(_settingsService.Settings.Groups);
+        GroupList.ItemsSource = _groups;
+    }
+
+    private async Task EnrichGroupNamesAsync()
     {
         try
         {
-            var groups = await _topicService.GetGroupsAsync();
-            _groups = new ObservableCollection<Group>(groups);
-            GroupList.ItemsSource = _groups;
-
-            // Also populate export combo
-            ExportGroupCombo.ItemsSource = _groups;
-            if (_groups.Count > 0)
-                ExportGroupCombo.SelectedIndex = 0;
-
-            Log.Information("Loaded {Count} groups", groups.Count);
+            var apiGroups = await _topicService.GetGroupsAsync();
+            var changed = false;
+            foreach (var g in _settingsService.Settings.Groups)
+            {
+                var match = apiGroups.FirstOrDefault(ag => ag.GroupId == g.GroupId);
+                if (match != null && g.Name != match.Name)
+                {
+                    g.Name = match.Name;
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                _settingsService.Save();
+                RefreshGroupList();
+            }
         }
-        catch (Exception ex)
+        catch
         {
-            Log.Error(ex, "Failed to load groups");
-            MessageBox.Show($"加载星球列表失败: {ex.Message}", "错误",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            // Can't enrich names from API, use placeholder names
         }
     }
 
-    private async void OnGroupSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    // Group management
+    private void OnAddGroup(object sender, RoutedEventArgs e)
     {
-        if (GroupList.SelectedItem is not Group group) return;
+        var input = GroupUrlInput.Text.Trim();
+        if (string.IsNullOrEmpty(input)) return;
+
+        var groupId = ParseGroupIdFromUrl(input);
+        if (groupId == null)
+        {
+            MessageBox.Show("无法解析星球ID，请输入正确的URL或ID", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_settingsService.Settings.Groups.Any(g => g.GroupId == groupId.Value))
+        {
+            MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var groupConfig = new GroupConfig
+        {
+            GroupId = groupId.Value,
+            Name = $"星球 {groupId.Value}",
+            Url = input.Contains("/") ? input : $"https://wx.zsxq.com/group/{groupId.Value}"
+        };
+
+        _settingsService.Settings.Groups.Add(groupConfig);
+        _settingsService.Save();
+        RefreshGroupList();
+        GroupUrlInput.Text = "";
+
+        // Try to get real name
+        _ = EnrichGroupNamesAsync();
+    }
+
+    private void OnRemoveGroup(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+        if (btn.Tag is not long groupId) return;
+
+        var group = _settingsService.Settings.Groups.FirstOrDefault(g => g.GroupId == groupId);
+        if (group != null)
+        {
+            _settingsService.Settings.Groups.Remove(group);
+            _settingsService.Save();
+            RefreshGroupList();
+        }
+    }
+
+    private void OnGroupSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (GroupList.SelectedItem is not GroupConfig group) return;
 
         _selectedGroup = group;
         _lastEndTime = null;
@@ -99,7 +181,7 @@ public partial class MainWindow : Window
         BtnLoadMore.Visibility = Visibility.Collapsed;
         TopicsLoading.Visibility = Visibility.Visible;
 
-        await LoadTopicsAsync();
+        _ = LoadTopicsAsync();
     }
 
     private async Task LoadTopicsAsync()
@@ -209,87 +291,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // Export
-    private void OnExportClick(object sender, RoutedEventArgs e)
-    {
-        ExportOverlay.Visibility = Visibility.Visible;
-    }
-
-    private void OnExportCancel(object sender, RoutedEventArgs e)
-    {
-        _exportCts?.Cancel();
-        ExportOverlay.Visibility = Visibility.Collapsed;
-        ExportProgress.Visibility = Visibility.Collapsed;
-        ExportProgressText.Visibility = Visibility.Collapsed;
-    }
-
-    private void OnBrowseExportDir(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "选择导出目录"
-        };
-
-        if (dialog.ShowDialog() == true)
-        {
-            ExportDir.Text = dialog.FolderName;
-        }
-    }
-
-    private async void OnStartExport(object sender, RoutedEventArgs e)
-    {
-        if (ExportGroupCombo.SelectedItem is not Group group)
-        {
-            MessageBox.Show("请选择要导出的星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var dir = ExportDir.Text;
-        if (string.IsNullOrEmpty(dir))
-        {
-            MessageBox.Show("请选择导出目录", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        Directory.CreateDirectory(dir);
-
-        ExportProgress.Visibility = Visibility.Visible;
-        ExportProgressText.Visibility = Visibility.Visible;
-        BtnStartExport.IsEnabled = false;
-
-        _exportCts = new CancellationTokenSource();
-
-        try
-        {
-            var progress = new Progress<ExportProgress>(p =>
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    ExportProgress.Value = p.Percent;
-                    ExportProgressText.Text = $"{p.CurrentFile} ({p.Processed}/{p.Total})";
-                });
-            });
-
-            await _exportService.ExportToMarkdownAsync(
-                group.GroupId, group.Name, dir, progress, _exportCts.Token);
-
-            MessageBox.Show("导出完成！", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (OperationCanceledException)
-        {
-            ExportProgressText.Text = "导出已取消";
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Export failed");
-            MessageBox.Show($"导出失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally
-        {
-            BtnStartExport.IsEnabled = true;
-        }
-    }
-
     // Monitor
     private async void OnMonitorToggle(object sender, RoutedEventArgs e)
     {
@@ -303,20 +304,20 @@ public partial class MainWindow : Window
         }
         else
         {
-            if (_groups.Count == 0)
+            var groupIds = _settingsService.Settings.Groups.Select(g => g.GroupId).ToList();
+            if (groupIds.Count == 0)
             {
-                MessageBox.Show("请先加载星球列表", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("请先在左侧添加星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            var groupIds = _groups.Select(g => g.GroupId).ToList();
             await _monitorService.StartAsync(groupIds);
-            _monitorService.IntervalSeconds = 30;
+            _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
 
             BtnMonitor.Content = "停止监控";
             MonitorDot.Fill = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Colors.Green);
-            MonitorStatus.Text = $"监控中 ({_groups.Count} 个星球)";
+            MonitorStatus.Text = $"监控中 ({groupIds.Count} 个星球)";
         }
     }
 
@@ -327,13 +328,11 @@ public partial class MainWindow : Window
             var topic = e.Topic;
             var groupName = _groups.FirstOrDefault(g => g.GroupId == e.GroupId)?.Name ?? "Unknown";
 
-            // Show balloon notification
             if (WindowState == WindowState.Minimized)
             {
                 FlashWindowEx(this);
             }
 
-            // Add to topic list if viewing the same group
             if (_selectedGroup?.GroupId == e.GroupId)
             {
                 _topics.Insert(0, new TopicDisplay(topic));
@@ -356,10 +355,20 @@ public partial class MainWindow : Window
     // Settings
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        var settingsWindow = new SettingsWindow(
-            _forwardService, _monitorService, _authService);
+        var settingsWindow = new SettingsWindow(_settingsService, _authService);
         settingsWindow.Owner = this;
-        settingsWindow.ShowDialog();
+        if (settingsWindow.ShowDialog() == true)
+        {
+            // Re-apply forwarder settings after save
+            _forwardService.RemoveForwarder("DingTalk");
+            _forwardService.RemoveForwarder("Feishu");
+            _forwardService.RemoveForwarder("Telegram");
+            _forwardService.RemoveForwarder("WeChat");
+            ApplyForwarderSettings();
+
+            _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
+            RefreshGroupList();
+        }
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -367,7 +376,6 @@ public partial class MainWindow : Window
         if (WindowState == WindowState.Minimized && _monitorService.IsRunning)
         {
             Hide();
-            // NotifyIcon would be set up here for system tray
         }
     }
 
@@ -385,6 +393,16 @@ public partial class MainWindow : Window
         _monitorService.Dispose();
         _exportCts?.Cancel();
         base.OnClosed(e);
+    }
+
+    private static long? ParseGroupIdFromUrl(string url)
+    {
+        var match = Regex.Match(url, @"group/(\d+)");
+        if (match.Success && long.TryParse(match.Groups[1].Value, out var id))
+            return id;
+        if (long.TryParse(url.Trim(), out var rawId))
+            return rawId;
+        return null;
     }
 }
 

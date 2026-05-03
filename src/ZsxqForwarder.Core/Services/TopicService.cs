@@ -17,7 +17,7 @@ public class TopicService
         return await _apiClient.GetGroupsAsync();
     }
 
-    public async Task<List<Topic>> GetAllTopicsAsync(int groupId, IProgress<(int Loaded, int Total)>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<List<Topic>> GetAllTopicsAsync(long groupId, IProgress<(int Loaded, int Total)>? progress = null, CancellationToken cancellationToken = default)
     {
         var allTopics = new List<Topic>();
         long? endTime = null;
@@ -43,7 +43,7 @@ public class TopicService
         return allTopics;
     }
 
-    public async Task<List<Topic>> GetLatestTopicsAsync(int groupId, int count = 5)
+    public async Task<List<Topic>> GetLatestTopicsAsync(long groupId, int count = 5)
     {
         var (topics, _) = await _apiClient.GetTopicsAsync(groupId, count: count);
         return topics;

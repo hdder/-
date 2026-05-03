@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using Serilog;
 using ZsxqForwarder.App.Views;
+using ZsxqForwarder.Core.Services;
 
 namespace ZsxqForwarder.App;
 
@@ -37,12 +38,15 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        var settingsService = new SettingsService();
+        settingsService.Load();
+
         var loginWindow = new LoginWindow();
         loginWindow.ShowDialog();
 
         if (loginWindow.LoginSucceeded)
         {
-            var mainWindow = new MainWindow(loginWindow.AccessToken!);
+            var mainWindow = new MainWindow(loginWindow.AccessToken!, settingsService);
             mainWindow.Show();
         }
         else

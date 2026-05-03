@@ -1,4 +1,6 @@
+using System.Text.RegularExpressions;
 using System.Windows;
+using ZsxqForwarder.Core.Models;
 using ZsxqForwarder.Core.Services;
 using ZsxqForwarder.Forwarders;
 
@@ -6,16 +8,14 @@ namespace ZsxqForwarder.App.Views;
 
 public partial class SettingsWindow : Window
 {
-    private readonly ForwardService _forwardService;
-    private readonly MonitorService _monitorService;
+    private readonly SettingsService _settingsService;
     private readonly AuthService _authService;
 
-    public SettingsWindow(ForwardService forwardService, MonitorService monitorService, AuthService authService)
+    public SettingsWindow(SettingsService settingsService, AuthService authService)
     {
         InitializeComponent();
 
-        _forwardService = forwardService;
-        _monitorService = monitorService;
+        _settingsService = settingsService;
         _authService = authService;
 
         LoadSettings();
@@ -25,55 +25,104 @@ public partial class SettingsWindow : Window
 
     private void LoadSettings()
     {
-        // Load forwarder settings
-        var telegram = _forwardService.Forwarders.OfType<TelegramForwarder>().FirstOrDefault();
-        if (telegram != null)
-        {
-            TelegramEnabled.IsChecked = telegram.IsEnabled;
-        }
+        var s = _settingsService.Settings;
 
-        var wechat = _forwardService.Forwarders.OfType<WechatForwarder>().FirstOrDefault();
-        if (wechat != null)
-        {
-            WechatEnabled.IsChecked = wechat.IsEnabled;
-        }
+        // Groups
+        GroupConfigList.ItemsSource = s.Groups.ToList();
 
-        var feishu = _forwardService.Forwarders.OfType<FeishuForwarder>().FirstOrDefault();
-        if (feishu != null)
-        {
-            FeishuEnabled.IsChecked = feishu.IsEnabled;
-        }
+        // Forwarders
+        DingTalkEnabled.IsChecked = s.DingTalk.Enabled;
+        DingTalkWebhook.Text = s.DingTalk.WebhookUrl;
+        DingTalkSecret.Text = s.DingTalk.Secret;
 
-        MonitorInterval.Value = _monitorService.IntervalSeconds;
+        FeishuEnabled.IsChecked = s.Feishu.Enabled;
+        FeishuWebhook.Text = s.Feishu.WebhookUrl;
+
+        TelegramEnabled.IsChecked = s.Telegram.Enabled;
+        TelegramBotToken.Text = s.Telegram.BotToken;
+        TelegramChatId.Text = s.Telegram.ChatId;
+
+        WechatEnabled.IsChecked = s.Wechat.Enabled;
+        WechatWebhook.Text = s.Wechat.WebhookUrl;
+
+        // Monitor
+        MonitorInterval.Value = s.Monitor.IntervalSeconds;
+
+        // Account
         LoginStatus.Text = _authService.IsLoggedIn ? "已登录" : "未登录";
+    }
+
+    private void OnAddGroup(object sender, RoutedEventArgs e)
+    {
+        var input = GroupUrlInput.Text.Trim();
+        if (string.IsNullOrEmpty(input)) return;
+
+        var groupId = ParseGroupIdFromUrl(input);
+        if (groupId == null)
+        {
+            MessageBox.Show("无法解析星球ID，请输入正确的URL或ID", "提示",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // Check duplicate
+        if (_settingsService.Settings.Groups.Any(g => g.GroupId == groupId.Value))
+        {
+            MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var groupConfig = new GroupConfig
+        {
+            GroupId = groupId.Value,
+            Name = $"星球 {groupId.Value}",
+            Url = input.Contains("/") ? input : $"https://wx.zsxq.com/group/{groupId.Value}"
+        };
+
+        _settingsService.Settings.Groups.Add(groupConfig);
+        _settingsService.Save();
+        GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
+
+        GroupUrlInput.Text = "";
+    }
+
+    private void OnRemoveGroup(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+        if (btn.Tag is not long groupId) return;
+
+        var group = _settingsService.Settings.Groups.FirstOrDefault(g => g.GroupId == groupId);
+        if (group != null)
+        {
+            _settingsService.Settings.Groups.Remove(group);
+            _settingsService.Save();
+            GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
+        }
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        // Apply forwarder settings
-        var telegram = _forwardService.Forwarders.OfType<TelegramForwarder>().FirstOrDefault();
-        if (telegram != null)
-        {
-            telegram.IsEnabled = TelegramEnabled.IsChecked == true;
-            telegram.Configure(TelegramBotToken.Text, TelegramChatId.Text);
-        }
+        var s = _settingsService.Settings;
 
-        var wechat = _forwardService.Forwarders.OfType<WechatForwarder>().FirstOrDefault();
-        if (wechat != null)
-        {
-            wechat.IsEnabled = WechatEnabled.IsChecked == true;
-            wechat.Configure(WechatWebhook.Text);
-        }
+        // Forwarders
+        s.DingTalk.Enabled = DingTalkEnabled.IsChecked == true;
+        s.DingTalk.WebhookUrl = DingTalkWebhook.Text.Trim();
+        s.DingTalk.Secret = DingTalkSecret.Text.Trim();
 
-        var feishu = _forwardService.Forwarders.OfType<FeishuForwarder>().FirstOrDefault();
-        if (feishu != null)
-        {
-            feishu.IsEnabled = FeishuEnabled.IsChecked == true;
-            feishu.Configure(FeishuWebhook.Text);
-        }
+        s.Feishu.Enabled = FeishuEnabled.IsChecked == true;
+        s.Feishu.WebhookUrl = FeishuWebhook.Text.Trim();
 
-        _monitorService.IntervalSeconds = (int)MonitorInterval.Value;
+        s.Telegram.Enabled = TelegramEnabled.IsChecked == true;
+        s.Telegram.BotToken = TelegramBotToken.Text.Trim();
+        s.Telegram.ChatId = TelegramChatId.Text.Trim();
 
+        s.Wechat.Enabled = WechatEnabled.IsChecked == true;
+        s.Wechat.WebhookUrl = WechatWebhook.Text.Trim();
+
+        // Monitor
+        s.Monitor.IntervalSeconds = (int)MonitorInterval.Value;
+
+        _settingsService.Save();
         DialogResult = true;
         Close();
     }
@@ -97,5 +146,15 @@ public partial class SettingsWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Application.Current.Shutdown();
         }
+    }
+
+    private static long? ParseGroupIdFromUrl(string url)
+    {
+        var match = Regex.Match(url, @"group/(\d+)");
+        if (match.Success && long.TryParse(match.Groups[1].Value, out var id))
+            return id;
+        if (long.TryParse(url.Trim(), out var rawId))
+            return rawId;
+        return null;
     }
 }

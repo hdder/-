@@ -6,7 +6,7 @@ public class MonitorService : IDisposable
 {
     private readonly TopicService _topicService;
     private readonly ForwardService _forwardService;
-    private readonly Dictionary<int, long> _lastKnownTopicIds = new();
+    private readonly Dictionary<long, long> _lastKnownTopicIds = new();
     private CancellationTokenSource? _cts;
     private bool _isRunning;
 
@@ -17,7 +17,7 @@ public class MonitorService : IDisposable
 
     public int IntervalSeconds { get; set; } = 30;
     public bool IsRunning => _isRunning;
-    public List<int> MonitoredGroups { get; set; } = [];
+    public List<long> MonitoredGroups { get; set; } = [];
 
     public MonitorService(TopicService topicService, ForwardService forwardService)
     {
@@ -25,7 +25,7 @@ public class MonitorService : IDisposable
         _forwardService = forwardService;
     }
 
-    public async Task StartAsync(List<int> groupIds)
+    public async Task StartAsync(List<long> groupIds)
     {
         if (_isRunning) return;
 
@@ -119,11 +119,11 @@ public class MonitorService : IDisposable
 public class NewTopicEventArgs : EventArgs
 {
     public Topic Topic { get; set; } = null!;
-    public int GroupId { get; set; }
+    public long GroupId { get; set; }
 }
 
 public class MonitorErrorEventArgs : EventArgs
 {
-    public int GroupId { get; set; }
+    public long GroupId { get; set; }
     public string Error { get; set; } = "";
 }

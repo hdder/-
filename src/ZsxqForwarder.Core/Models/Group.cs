@@ -5,7 +5,7 @@ namespace ZsxqForwarder.Core.Models;
 public class Group
 {
     [JsonProperty("group_id")]
-    public int GroupId { get; set; }
+    public long GroupId { get; set; }
 
     [JsonProperty("name")]
     public string Name { get; set; } = string.Empty;

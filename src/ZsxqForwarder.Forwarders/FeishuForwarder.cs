@@ -19,42 +19,91 @@ public class FeishuForwarder : IForwarder
 
     public async Task ForwardAsync(Topic topic)
     {
-        if (string.IsNullOrEmpty(_webhookUrl))
-            return;
+        if (string.IsNullOrEmpty(_webhookUrl)) return;
 
-        var text = FormatMessage(topic);
-
-        var payload = new
+        // Send main content as rich post
+        var (title, contentLines) = FormatPost(topic);
+        await PostAsync(new
         {
-            msg_type = "text",
+            msg_type = "post",
             content = new
             {
-                text = text
+                post = new
+                {
+                    zh_cn = new
+                    {
+                        title,
+                        content = contentLines
+                    }
+                }
             }
-        };
+        });
 
-        var json = JsonConvert.SerializeObject(payload);
-        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        // Send images as text links (webhook can't upload images without app_id)
+        if (topic.Talk?.Images?.Count > 0)
+        {
+            var imgText = string.Join("\n", topic.Talk.Images.Select((img, i) =>
+            {
+                var url = img.Original?.Url ?? img.Large?.Url ?? img.Url;
+                return $"图片{i + 1}: {url}";
+            }));
+            await PostAsync(new
+            {
+                msg_type = "text",
+                content = new { text = imgText }
+            });
+        }
 
-        var response = await _httpClient.PostAsync(_webhookUrl, content);
-        response.EnsureSuccessStatusCode();
+        // Send files as text links
+        if (topic.Talk?.Files?.Count > 0)
+        {
+            var fileText = "附件:\n" + string.Join("\n",
+                topic.Talk.Files.Select(f => $"{f.Name}: {f.Url}"));
+            await PostAsync(new
+            {
+                msg_type = "text",
+                content = new { text = fileText }
+            });
+        }
     }
 
-    private static string FormatMessage(Topic topic)
+    private static (string title, List<List<Dictionary<string, object>>> contentLines) FormatPost(Topic topic)
     {
         var author = topic.Talk?.Owner?.Name
                      ?? topic.Task?.Owner?.Name
+                     ?? topic.Question?.Owner?.Name
                      ?? "Unknown";
-
+        var title = $"[{topic.Type}] {author}";
         var text = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
 
-        var msg = $"[{topic.Type}] {author}\n" +
-                  $"{topic.CreatedAt:yyyy-MM-dd HH:mm}\n\n" +
-                  $"{text}";
+        var contentLines = new List<List<Dictionary<string, object>>>();
 
-        if (topic.Talk?.Images?.Count > 0)
-            msg += $"\n\n[Contains {topic.Talk.Images.Count} image(s)]";
+        // Time line
+        contentLines.Add(new List<Dictionary<string, object>>
+        {
+            new() { ["tag"] = "text", ["text"] = $"{topic.CreatedAt:yyyy-MM-dd HH:mm}" }
+        });
 
-        return msg;
+        // Content
+        contentLines.Add(new List<Dictionary<string, object>>
+        {
+            new() { ["tag"] = "text", ["text"] = text }
+        });
+
+        // Stats
+        contentLines.Add(new List<Dictionary<string, object>>
+        {
+            new() { ["tag"] = "text", ["text"] = $"点赞: {topic.LikesCount} | 评论: {topic.CommentsCount}" }
+        });
+
+        return (title, contentLines);
+    }
+
+    private async Task PostAsync(object payload)
+    {
+        var json = JsonConvert.SerializeObject(payload);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _httpClient.PostAsync(_webhookUrl, content);
+        response.EnsureSuccessStatusCode();
     }
 }
