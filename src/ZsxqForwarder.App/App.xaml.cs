@@ -30,27 +30,45 @@ public partial class App : Application
         DispatcherUnhandledException += (s, e) =>
         {
             Log.Error(e.Exception, "Dispatcher unhandled exception");
+            MessageBox.Show($"发生错误: {e.Exception.Message}\n\n{e.Exception.StackTrace}", "错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
             e.Handled = true;
+        };
+
+        TaskScheduler.UnobservedTaskException += (s, e) =>
+        {
+            Log.Error(e.Exception, "Unobserved task exception");
+            e.SetObserved();
         };
     }
 
-    protected override async void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        var settingsService = new SettingsService();
-        settingsService.Load();
-
-        var loginWindow = new LoginWindow();
-        loginWindow.ShowDialog();
-
-        if (loginWindow.LoginSucceeded)
+        try
         {
-            var mainWindow = new MainWindow(loginWindow.AccessToken!, settingsService);
-            mainWindow.Show();
+            var settingsService = new SettingsService();
+            settingsService.Load();
+
+            var loginWindow = new LoginWindow();
+            loginWindow.ShowDialog();
+
+            if (loginWindow.LoginSucceeded)
+            {
+                var mainWindow = new MainWindow(loginWindow.AccessToken!, settingsService);
+                mainWindow.Show();
+            }
+            else
+            {
+                Shutdown();
+            }
         }
-        else
+        catch (Exception ex)
         {
+            Log.Fatal(ex, "Fatal error during startup");
+            MessageBox.Show($"启动失败: {ex.Message}\n\n{ex.StackTrace}", "致命错误",
+                MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown();
         }
     }
