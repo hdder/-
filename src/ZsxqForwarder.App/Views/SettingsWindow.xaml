@@ -113,7 +113,7 @@
                                               VerticalAlignment="Center" Margin="4,0"/>
                                     <Button Grid.Column="1" Content="删除" FontSize="10"
                                             Padding="6,2" Margin="40,0,0,0"
-                                            Click="OnRemoveRule" Tag="{Binding GroupId}"/>
+                                            Click="OnRemoveRule"/>
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>

@@ -1,3 +1,4 @@
+using Serilog;
 using ZsxqForwarder.Core.Models;
 
 namespace ZsxqForwarder.Core.Services;
@@ -14,6 +15,7 @@ public class ForwardService
     private readonly List<IForwarder> _forwarders = [];
     private List<ForwardRule> _rules = [];
     private Func<ForwardRule, IForwarder?>? _forwarderFactory;
+    private DatabaseService? _db;
 
     public IReadOnlyList<IForwarder> Forwarders => _forwarders.AsReadOnly();
 
@@ -37,7 +39,12 @@ public class ForwardService
         _forwarderFactory = factory;
     }
 
-    public async Task ForwardAsync(Topic topic, long groupId)
+    public void SetDatabase(DatabaseService db)
+    {
+        _db = db;
+    }
+
+    public async Task ForwardAsync(Topic topic, long groupId, string groupName = "")
     {
         var matchingRules = _rules.Where(r =>
             r.GroupId == groupId && r.Enabled && !string.IsNullOrEmpty(r.WebhookUrl)).ToList();
@@ -49,7 +56,7 @@ public class ForwardService
             {
                 var forwarder = _forwarderFactory(rule);
                 if (forwarder != null)
-                    tasks.Add(ForwardWithRetryAsync(forwarder, topic));
+                    tasks.Add(ForwardAndLogAsync(forwarder, topic, groupId, rule));
             }
             if (tasks.Count > 0)
             {
@@ -61,6 +68,50 @@ public class ForwardService
         // Fallback: all enabled forwarders
         var enabled = _forwarders.Where(f => f.IsEnabled).ToList();
         await Task.WhenAll(enabled.Select(f => ForwardWithRetryAsync(f, topic)));
+    }
+
+    private async Task ForwardAndLogAsync(IForwarder forwarder, Topic topic, long groupId, ForwardRule rule)
+    {
+        var author = topic.Talk?.Owner?.Name ?? topic.Task?.Owner?.Name ?? "Unknown";
+        var content = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
+        var preview = content.Length > 100 ? content[..100] + "..." : content;
+
+        string status = "Success";
+        string? errorMsg = null;
+
+        try
+        {
+            await ForwardWithRetryAsync(forwarder, topic);
+        }
+        catch (Exception ex)
+        {
+            status = "Failed";
+            errorMsg = ex.Message;
+            Log.Error(ex, "Forward failed for topic {TopicId} to {Type}", topic.TopicId, rule.ForwarderType);
+        }
+
+        // Save topic and log
+        try
+        {
+            _db?.SaveTopic(topic, groupId);
+            _db?.AddForwardLog(new ForwardLogEntry
+            {
+                TopicId = topic.TopicId,
+                GroupId = groupId,
+                GroupName = rule.GroupName,
+                Author = author,
+                ContentPreview = preview,
+                ForwarderType = rule.ForwarderType,
+                WebhookUrl = rule.WebhookUrl,
+                Status = status,
+                ErrorMessage = errorMsg,
+                ForwardedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save forward log");
+        }
     }
 
     private static async Task ForwardWithRetryAsync(IForwarder forwarder, Topic topic)

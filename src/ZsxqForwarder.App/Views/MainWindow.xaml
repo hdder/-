@@ -176,94 +176,163 @@
             <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" Background="Transparent"/>
 
-            <!-- Column 3: Detail / Actions -->
+            <!-- Column 3: Detail / Forward Log -->
             <Border Grid.Column="4" Style="{StaticResource CardBorder}" Margin="4,0,0,0">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="详情" FontWeight="SemiBold"
-                               FontSize="14" Margin="0,0,0,12"
-                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TabControl>
 
-                    <!-- Topic Detail -->
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="TopicDetail">
-                            <!-- Placeholder -->
-                            <TextBlock x:Name="DetailPlaceholder"
-                                       Text="选择一个帖子查看详情"
-                                       Foreground="{StaticResource TextSecondaryBrush}"
-                                       FontSize="13" HorizontalAlignment="Center"
-                                       Margin="0,40,0,0"/>
+                        <!-- Detail Tab -->
+                        <TabItem Header="详情">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="TopicDetail">
+                                    <!-- Placeholder -->
+                                    <TextBlock x:Name="DetailPlaceholder"
+                                               Text="选择一个帖子查看详情"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               FontSize="13" HorizontalAlignment="Center"
+                                               Margin="0,40,0,0"/>
 
-                            <!-- Author -->
-                            <StackPanel x:Name="DetailAuthor" Orientation="Horizontal"
-                                        Margin="0,0,0,12" Visibility="Collapsed">
-                                <Ellipse Width="32" Height="32" Margin="0,0,8,0">
-                                    <Ellipse.Fill>
-                                        <SolidColorBrush Color="#E0E0E0"/>
-                                    </Ellipse.Fill>
-                                </Ellipse>
-                                <StackPanel VerticalAlignment="Center">
-                                    <TextBlock x:Name="DetailAuthorName" FontWeight="Medium" FontSize="13"/>
-                                    <TextBlock x:Name="DetailTime" FontSize="11"
-                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                    <!-- Author -->
+                                    <StackPanel x:Name="DetailAuthor" Orientation="Horizontal"
+                                                Margin="0,0,0,12" Visibility="Collapsed">
+                                        <Ellipse Width="32" Height="32" Margin="0,0,8,0">
+                                            <Ellipse.Fill>
+                                                <SolidColorBrush Color="#E0E0E0"/>
+                                            </Ellipse.Fill>
+                                        </Ellipse>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock x:Name="DetailAuthorName" FontWeight="Medium" FontSize="13"/>
+                                            <TextBlock x:Name="DetailTime" FontSize="11"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <!-- Content -->
+                                    <TextBlock x:Name="DetailText" TextWrapping="Wrap" FontSize="14"
+                                               LineHeight="22" Visibility="Collapsed"/>
+
+                                    <!-- Images -->
+                                    <ItemsControl x:Name="DetailImages" Margin="0,12,0,0" Visibility="Collapsed">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,4,4" CornerRadius="4"
+                                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+                                                    <Image Source="{Binding}" Width="120" Height="120"
+                                                           Stretch="UniformToFill" StretchDirection="Both"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <!-- Stats -->
+                                    <StackPanel x:Name="DetailStats" Orientation="Horizontal"
+                                                Margin="0,16,0,0" Visibility="Collapsed">
+                                        <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}">
+                                            <Run Text="Like "/><Run x:Name="DetailLikes" Text="0"/>
+                                        </TextBlock>
+                                        <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="16,0,0,0">
+                                            <Run Text="Comment "/><Run x:Name="DetailComments" Text="0"/>
+                                        </TextBlock>
+                                    </StackPanel>
+
+                                    <!-- Comments -->
+                                    <TextBlock x:Name="CommentsHeader" Text="评论" FontWeight="SemiBold"
+                                               FontSize="13" Margin="0,16,0,8" Visibility="Collapsed"/>
+                                    <ItemsControl x:Name="CommentsList" Visibility="Collapsed">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#F8F8F8" CornerRadius="4"
+                                                        Padding="10" Margin="0,0,0,6">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Owner.Name}" FontSize="12"
+                                                                   FontWeight="Medium"/>
+                                                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                                                   FontSize="12" Margin="0,4,0,0"/>
+                                                        <TextBlock Text="{Binding CreatedAt, StringFormat='{}{0:MM-dd HH:mm}'}"
+                                                                   FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
+                                                                   Margin="0,4,0,0"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </StackPanel>
-                            </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
 
-                            <!-- Content -->
-                            <TextBlock x:Name="DetailText" TextWrapping="Wrap" FontSize="14"
-                                       LineHeight="22" Visibility="Collapsed"/>
+                        <!-- Forward Log Tab -->
+                        <TabItem Header="转发记录">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Text="最近的转发记录" FontSize="12"
+                                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                <ListBox x:Name="ForwardLogList"
+                                         BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Padding="6" Margin="0,2">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Author}" FontSize="12" FontWeight="Medium"/>
+                                                            <TextBlock Text=" → " FontSize="12"/>
+                                                            <TextBlock Text="{Binding ForwarderType}" FontSize="12"
+                                                                       Foreground="{StaticResource PrimaryBrush}"/>
+                                                            <Border Background="#E8F5E9" CornerRadius="3" Padding="4,1" Margin="4,0,0,0">
+                                                                <Border.Style>
+                                                                    <Style TargetType="Border">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                                                                <Setter Property="Background" Value="#FFEBEE"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </Border.Style>
+                                                                <TextBlock FontSize="10">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Foreground" Value="#2E7D32"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                                                                    <Setter Property="Foreground" Value="#C62828"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                    <TextBlock.Text>
+                                                                        <MultiBinding StringFormat="{}{0}">
+                                                                            <Binding Path="Status"/>
+                                                                        </MultiBinding>
+                                                                    </TextBlock.Text>
+                                                                </TextBlock>
+                                                            </Border>
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding ContentPreview}" FontSize="11"
+                                                                   TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+                                                        <TextBlock Text="{Binding ForwardedAt}" FontSize="10"
+                                                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1" Content="补发" FontSize="10"
+                                                            Padding="6,3" VerticalAlignment="Center"
+                                                            Click="OnResendClick" Tag="{Binding Id}"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </TabItem>
 
-                            <!-- Images -->
-                            <ItemsControl x:Name="DetailImages" Margin="0,12,0,0" Visibility="Collapsed">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <WrapPanel/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Margin="0,0,4,4" CornerRadius="4"
-                                                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
-                                            <Image Source="{Binding}" Width="120" Height="120"
-                                                   Stretch="UniformToFill" StretchDirection="Both"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <!-- Stats -->
-                            <StackPanel x:Name="DetailStats" Orientation="Horizontal"
-                                        Margin="0,16,0,0" Visibility="Collapsed">
-                                <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}">
-                                    <Run Text="Like "/><Run x:Name="DetailLikes" Text="0"/>
-                                </TextBlock>
-                                <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="16,0,0,0">
-                                    <Run Text="Comment "/><Run x:Name="DetailComments" Text="0"/>
-                                </TextBlock>
-                            </StackPanel>
-
-                            <!-- Comments -->
-                            <TextBlock x:Name="CommentsHeader" Text="评论" FontWeight="SemiBold"
-                                       FontSize="13" Margin="0,16,0,8" Visibility="Collapsed"/>
-                            <ItemsControl x:Name="CommentsList" Visibility="Collapsed">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Background="#F8F8F8" CornerRadius="4"
-                                                Padding="10" Margin="0,0,0,6">
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding Owner.Name}" FontSize="12"
-                                                           FontWeight="Medium"/>
-                                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
-                                                           FontSize="12" Margin="0,4,0,0"/>
-                                                <TextBlock Text="{Binding CreatedAt, StringFormat='{}{0:MM-dd HH:mm}'}"
-                                                           FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
-                                                           Margin="0,4,0,0"/>
-                                            </StackPanel>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </ScrollViewer>
+                    </TabControl>
                 </DockPanel>
             </Border>
         </Grid>

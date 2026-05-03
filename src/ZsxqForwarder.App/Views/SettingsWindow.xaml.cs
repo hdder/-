@@ -8,14 +8,14 @@ namespace ZsxqForwarder.App.Views;
 
 public partial class SettingsWindow : Window
 {
-    private readonly SettingsService _settingsService;
+    private readonly DatabaseService _db;
     private readonly AuthService _authService;
 
-    public SettingsWindow(SettingsService settingsService, AuthService authService)
+    public SettingsWindow(DatabaseService db, AuthService authService)
     {
         InitializeComponent();
 
-        _settingsService = settingsService;
+        _db = db;
         _authService = authService;
 
         LoadSettings();
@@ -25,23 +25,21 @@ public partial class SettingsWindow : Window
 
     private void LoadSettings()
     {
-        var s = _settingsService.Settings;
-
-        // Groups
-        GroupConfigList.ItemsSource = s.Groups.ToList();
-        RuleGroupCombo.ItemsSource = s.Groups.ToList();
-
-        // Forward rules
-        ForwardRuleList.ItemsSource = s.ForwardRules.ToList();
-
-        // Monitor
-        MonitorInterval.Value = s.Monitor.IntervalSeconds;
-
-        // Account
+        GroupConfigList.ItemsSource = _db.GetGroups();
+        RuleGroupCombo.ItemsSource = _db.GetGroups();
+        ForwardRuleList.ItemsSource = _db.GetForwardRules();
+        MonitorInterval.Value = _db.GetMonitorInterval();
         LoginStatus.Text = _authService.IsLoggedIn ? "已登录" : "未登录";
     }
 
-    // Group management
+    private void RefreshLists()
+    {
+        GroupConfigList.ItemsSource = _db.GetGroups();
+        RuleGroupCombo.ItemsSource = _db.GetGroups();
+        ForwardRuleList.ItemsSource = _db.GetForwardRules();
+    }
+
+    // Groups
     private void OnAddGroup(object sender, RoutedEventArgs e)
     {
         var input = GroupUrlInput.Text?.Trim() ?? "";
@@ -54,26 +52,24 @@ public partial class SettingsWindow : Window
         var groupId = ParseGroupIdFromUrl(input);
         if (groupId == null)
         {
-            MessageBox.Show("无法解析星球ID，请输入正确的URL或ID", "提示",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("无法解析星球ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        if (_settingsService.Settings.Groups.Any(g => g.GroupId == groupId.Value))
+        var groups = _db.GetGroups();
+        if (groups.Any(g => g.GroupId == groupId.Value))
         {
             MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var groupConfig = new GroupConfig
+        _db.SaveGroup(new GroupConfig
         {
             GroupId = groupId.Value,
             Name = $"星球 {groupId.Value}",
             Url = input.Contains("/") ? input : $"https://wx.zsxq.com/group/{groupId.Value}"
-        };
+        });
 
-        _settingsService.Settings.Groups.Add(groupConfig);
-        _settingsService.Save();
         RefreshLists();
         GroupUrlInput.Text = "";
     }
@@ -83,18 +79,11 @@ public partial class SettingsWindow : Window
         if (sender is not Button btn) return;
         if (btn.Tag is not long groupId) return;
 
-        var group = _settingsService.Settings.Groups.FirstOrDefault(g => g.GroupId == groupId);
-        if (group != null)
-        {
-            _settingsService.Settings.Groups.Remove(group);
-            // Also remove related rules
-            _settingsService.Settings.ForwardRules.RemoveAll(r => r.GroupId == groupId);
-            _settingsService.Save();
-            RefreshLists();
-        }
+        _db.RemoveGroup(groupId);
+        RefreshLists();
     }
 
-    // Forward rules
+    // Forward Rules
     private void OnAddRule(object sender, RoutedEventArgs e)
     {
         if (RuleGroupCombo.SelectedItem is not GroupConfig group)
@@ -118,7 +107,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var rule = new ForwardRule
+        _db.SaveForwardRule(new ForwardRule
         {
             GroupId = group.GroupId,
             GroupName = group.Name,
@@ -126,37 +115,26 @@ public partial class SettingsWindow : Window
             WebhookUrl = webhook,
             Secret = RuleSecret.Text?.Trim() ?? "",
             Enabled = true
-        };
+        });
 
-        _settingsService.Settings.ForwardRules.Add(rule);
-        _settingsService.Save();
         RefreshLists();
-
         RuleWebhookUrl.Text = "";
         RuleSecret.Text = "";
     }
 
     private void OnRemoveRule(object sender, RoutedEventArgs e)
     {
+        // Use a different approach: get the ForwardRule from DataContext
         if (sender is not Button btn) return;
-        if (btn.Tag is not long groupId) return;
+        if (btn.DataContext is not ForwardRule rule) return;
 
-        // Find the rule - since Tag is GroupId, remove the first matching rule for this group
-        var rule = _settingsService.Settings.ForwardRules.FirstOrDefault(r => r.GroupId == groupId);
-        if (rule != null)
-        {
-            _settingsService.Settings.ForwardRules.Remove(rule);
-            _settingsService.Save();
-            RefreshLists();
-        }
+        _db.RemoveForwardRule(rule.Id);
+        RefreshLists();
     }
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        var s = _settingsService.Settings;
-        s.Monitor.IntervalSeconds = (int)MonitorInterval.Value;
-
-        _settingsService.Save();
+        _db.SetMonitorInterval((int)MonitorInterval.Value);
         DialogResult = true;
         Close();
     }
@@ -180,13 +158,6 @@ public partial class SettingsWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Application.Current.Shutdown();
         }
-    }
-
-    private void RefreshLists()
-    {
-        GroupConfigList.ItemsSource = _settingsService.Settings.Groups.ToList();
-        RuleGroupCombo.ItemsSource = _settingsService.Settings.Groups.ToList();
-        ForwardRuleList.ItemsSource = _settingsService.Settings.ForwardRules.ToList();
     }
 
     private static long? ParseGroupIdFromUrl(string url)

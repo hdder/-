@@ -18,22 +18,21 @@ public partial class MainWindow : Window
     private readonly MonitorService _monitorService;
     private readonly ForwardService _forwardService;
     private readonly AuthService _authService;
-    private readonly SettingsService _settingsService;
+    private readonly DatabaseService _db;
 
     private ObservableCollection<GroupConfig> _groups = [];
     private ObservableCollection<TopicDisplay> _topics = [];
+    private ObservableCollection<ForwardLogEntry> _forwardLogs = [];
     private List<Topic> _rawTopics = [];
     private GroupConfig? _selectedGroup;
     private long? _lastEndTime;
     private bool _hasMoreTopics = true;
-    private CancellationTokenSource? _exportCts;
-    private CancellationTokenSource? _monitorCts;
 
-    public MainWindow(string accessToken, SettingsService settingsService)
+    public MainWindow(string accessToken, DatabaseService db)
     {
         InitializeComponent();
 
-        _settingsService = settingsService;
+        _db = db;
         _apiClient = new ZsxqApiClient();
         _apiClient.SetAccessToken(accessToken);
         _topicService = new TopicService(_apiClient);
@@ -41,18 +40,20 @@ public partial class MainWindow : Window
         _authService = new AuthService();
         _authService.SaveToken(accessToken);
 
-        // Setup forwarders from settings
+        // Setup forwarders from DB
         _forwardService = new ForwardService();
+        _forwardService.SetDatabase(_db);
         ApplyForwarderSettings();
 
         // Setup monitor
         _monitorService = new MonitorService(_topicService, _forwardService);
-        _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
+        _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
 
-        // Load groups from settings
+        // Load groups from DB
         RefreshGroupList();
+        RefreshForwardLogs();
 
         // Try to enrich group names from API
         _ = EnrichGroupNamesAsync();
@@ -60,8 +61,8 @@ public partial class MainWindow : Window
 
     private void ApplyForwarderSettings()
     {
-        var s = _settingsService.Settings;
-        _forwardService.SetRules(s.ForwardRules);
+        var rules = _db.GetForwardRules();
+        _forwardService.SetRules(rules);
         _forwardService.SetForwarderFactory(rule => rule.ForwarderType switch
         {
             "DingTalk" => CreateDingTalk(rule),
@@ -86,8 +87,14 @@ public partial class MainWindow : Window
 
     private void RefreshGroupList()
     {
-        _groups = new ObservableCollection<GroupConfig>(_settingsService.Settings.Groups);
+        _groups = new ObservableCollection<GroupConfig>(_db.GetGroups());
         GroupList.ItemsSource = _groups;
+    }
+
+    private void RefreshForwardLogs()
+    {
+        _forwardLogs = new ObservableCollection<ForwardLogEntry>(_db.GetForwardLogs(50));
+        ForwardLogList.ItemsSource = _forwardLogs;
     }
 
     private async Task EnrichGroupNamesAsync()
@@ -96,32 +103,28 @@ public partial class MainWindow : Window
         {
             var apiGroups = await _topicService.GetGroupsAsync();
             var changed = false;
-            foreach (var g in _settingsService.Settings.Groups)
+            foreach (var g in _groups)
             {
                 var match = apiGroups.FirstOrDefault(ag => ag.GroupId == g.GroupId);
                 if (match != null && g.Name != match.Name)
                 {
                     g.Name = match.Name;
+                    _db.SaveGroup(g);
                     changed = true;
                 }
             }
             if (changed)
             {
-                _settingsService.Save();
                 RefreshGroupList();
             }
         }
-        catch
-        {
-            // Can't enrich names from API, use placeholder names
-        }
+        catch { }
     }
 
     // Group management
     private void OnAddGroup(object sender, RoutedEventArgs e)
     {
         var input = GroupUrlInput.Text?.Trim() ?? "";
-        Log.Information("OnAddGroup called with input: '{Input}'", input);
         if (string.IsNullOrEmpty(input))
         {
             MessageBox.Show("请输入星球URL或ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -131,12 +134,11 @@ public partial class MainWindow : Window
         var groupId = ParseGroupIdFromUrl(input);
         if (groupId == null)
         {
-            MessageBox.Show("无法解析星球ID，请输入正确的URL或ID", "提示",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("无法解析星球ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        if (_settingsService.Settings.Groups.Any(g => g.GroupId == groupId.Value))
+        if (_groups.Any(g => g.GroupId == groupId.Value))
         {
             MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -149,12 +151,10 @@ public partial class MainWindow : Window
             Url = input.Contains("/") ? input : $"https://wx.zsxq.com/group/{groupId.Value}"
         };
 
-        _settingsService.Settings.Groups.Add(groupConfig);
-        _settingsService.Save();
+        _db.SaveGroup(groupConfig);
         RefreshGroupList();
         GroupUrlInput.Text = "";
 
-        // Try to get real name
         _ = EnrichGroupNamesAsync();
     }
 
@@ -163,13 +163,8 @@ public partial class MainWindow : Window
         if (sender is not System.Windows.Controls.Button btn) return;
         if (btn.Tag is not long groupId) return;
 
-        var group = _settingsService.Settings.Groups.FirstOrDefault(g => g.GroupId == groupId);
-        if (group != null)
-        {
-            _settingsService.Settings.Groups.Remove(group);
-            _settingsService.Save();
-            RefreshGroupList();
-        }
+        _db.RemoveGroup(groupId);
+        RefreshGroupList();
     }
 
     private void OnGroupSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -243,7 +238,6 @@ public partial class MainWindow : Window
         var topic = _rawTopics.FirstOrDefault(t => t.TopicId == display.TopicId);
         if (topic == null) return;
 
-        // Show detail
         DetailPlaceholder.Visibility = Visibility.Collapsed;
         DetailAuthor.Visibility = Visibility.Visible;
         DetailText.Visibility = Visibility.Visible;
@@ -259,7 +253,6 @@ public partial class MainWindow : Window
         var text = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
         DetailText.Text = text;
 
-        // Images
         var images = topic.Talk?.Images?.Select(i => i.Large?.Url ?? i.Url).ToList();
         if (images?.Count > 0)
         {
@@ -271,11 +264,9 @@ public partial class MainWindow : Window
             DetailImages.Visibility = Visibility.Collapsed;
         }
 
-        // Stats
         DetailLikes.Text = topic.LikesCount.ToString();
         DetailComments.Text = topic.CommentsCount.ToString();
 
-        // Load comments
         if (topic.CommentsCount > 0)
         {
             try
@@ -297,6 +288,63 @@ public partial class MainWindow : Window
         }
     }
 
+    // Resend (补发)
+    private async void OnResendClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+        if (btn.Tag is not int logId) return;
+
+        var log = _forwardLogs.FirstOrDefault(l => l.Id == logId);
+        if (log == null) return;
+
+        var topic = _db.GetTopic(log.TopicId);
+        if (topic == null)
+        {
+            MessageBox.Show("帖子数据不存在", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var rule = new ForwardRule
+        {
+            ForwarderType = log.ForwarderType,
+            WebhookUrl = log.WebhookUrl
+        };
+
+        var forwarder = rule.ForwarderType switch
+        {
+            "DingTalk" => CreateDingTalk(rule) as IForwarder,
+            "Feishu" => CreateFeishu(rule),
+            _ => null
+        };
+
+        if (forwarder == null) return;
+
+        try
+        {
+            await forwarder.ForwardAsync(topic);
+
+            _db.AddForwardLog(new ForwardLogEntry
+            {
+                TopicId = topic.TopicId,
+                GroupId = log.GroupId,
+                GroupName = log.GroupName,
+                Author = log.Author,
+                ContentPreview = log.ContentPreview,
+                ForwarderType = log.ForwarderType,
+                WebhookUrl = log.WebhookUrl,
+                Status = "Success",
+                ForwardedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            });
+
+            RefreshForwardLogs();
+            MessageBox.Show("补发成功", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"补发失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     // Monitor
     private async void OnMonitorToggle(object sender, RoutedEventArgs e)
     {
@@ -310,15 +358,14 @@ public partial class MainWindow : Window
         }
         else
         {
-            var groupIds = _settingsService.Settings.Groups.Select(g => g.GroupId).ToList();
+            var groupIds = _db.GetGroups().Select(g => g.GroupId).ToList();
             if (groupIds.Count == 0)
             {
-                MessageBox.Show("请先在左侧添加星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("请先添加星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             await _monitorService.StartAsync(groupIds);
-            _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
 
             BtnMonitor.Content = "停止监控";
             MonitorDot.Fill = new System.Windows.Media.SolidColorBrush(
@@ -335,9 +382,7 @@ public partial class MainWindow : Window
             var groupName = _groups.FirstOrDefault(g => g.GroupId == e.GroupId)?.Name ?? "Unknown";
 
             if (WindowState == WindowState.Minimized)
-            {
                 FlashWindowEx(this);
-            }
 
             if (_selectedGroup?.GroupId == e.GroupId)
             {
@@ -347,6 +392,7 @@ public partial class MainWindow : Window
             }
 
             SyncTime.Text = $"新帖: {topic.Talk?.Owner?.Name} @ {groupName} - {DateTime.Now:HH:mm:ss}";
+            RefreshForwardLogs();
         });
     }
 
@@ -361,18 +407,12 @@ public partial class MainWindow : Window
     // Settings
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        var settingsWindow = new SettingsWindow(_settingsService, _authService);
+        var settingsWindow = new SettingsWindow(_db, _authService);
         settingsWindow.Owner = this;
         if (settingsWindow.ShowDialog() == true)
         {
-            // Re-apply forwarder settings after save
-            _forwardService.RemoveForwarder("DingTalk");
-            _forwardService.RemoveForwarder("Feishu");
-            _forwardService.RemoveForwarder("Telegram");
-            _forwardService.RemoveForwarder("WeChat");
             ApplyForwarderSettings();
-
-            _monitorService.IntervalSeconds = _settingsService.Settings.Monitor.IntervalSeconds;
+            _monitorService.IntervalSeconds = _db.GetMonitorInterval();
             RefreshGroupList();
         }
     }
@@ -380,9 +420,7 @@ public partial class MainWindow : Window
     private void OnStateChanged(object? sender, EventArgs e)
     {
         if (WindowState == WindowState.Minimized && _monitorService.IsRunning)
-        {
             Hide();
-        }
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -397,7 +435,6 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _monitorService.Dispose();
-        _exportCts?.Cancel();
         base.OnClosed(e);
     }
 
@@ -412,7 +449,6 @@ public partial class MainWindow : Window
     }
 }
 
-// Display wrapper for Topic
 public class TopicDisplay
 {
     public long TopicId { get; }

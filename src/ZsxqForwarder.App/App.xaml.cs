@@ -52,8 +52,8 @@ public partial class App : Application
 
         try
         {
-            var settingsService = new SettingsService();
-            settingsService.Load();
+            var db = new DatabaseService();
+            db.Init();
 
             var loginWindow = new LoginWindow();
             loginWindow.ShowDialog();
@@ -62,7 +62,7 @@ public partial class App : Application
 
             if (loginWindow.LoginSucceeded)
             {
-                var mainWindow = new MainWindow(loginWindow.AccessToken!, settingsService);
+                var mainWindow = new MainWindow(loginWindow.AccessToken!, db);
                 mainWindow.Closed += (s, args) =>
                 {
                     Log.Information("MainWindow closed, shutting down");
