@@ -12,47 +12,63 @@ namespace ZsxqForwarder.App.Services;
 public class BrowserService : IDisposable
 {
     private Microsoft.Web.WebView2.Wpf.WebView2? _webView;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private readonly SemaphoreSlim _fetchLock = new(1, 1);
     private bool _initialized;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+
+    public bool IsReady => _initialized;
 
     public async Task InitWithTokenAsync(string accessToken)
     {
-        _webView = new Microsoft.Web.WebView2.Wpf.WebView2
+        await _initLock.WaitAsync();
+        try
         {
-            Visibility = Visibility.Hidden,
-            Width = 0,
-            Height = 0
-        };
+            if (_initialized) return;
 
-        // Create WebView2 environment
-        var env = await CoreWebView2Environment.CreateAsync();
-        await _webView.EnsureCoreWebView2Async(env);
+            _webView = new Microsoft.Web.WebView2.Wpf.WebView2
+            {
+                Visibility = Visibility.Hidden,
+                Width = 0,
+                Height = 0
+            };
 
-        // Set the access token cookie
-        _webView.CoreWebView2.CookieManager.AddOrUpdateCookie(
-            _webView.CoreWebView2.CookieManager.CreateCookie(
-                "zsxq_access_token", accessToken, ".zsxq.com", "/"));
+            var env = await CoreWebView2Environment.CreateAsync();
+            await _webView.EnsureCoreWebView2Async(env);
 
-        _initialized = true;
-        Log.Information("BrowserService initialized with token");
+            _webView.CoreWebView2.CookieManager.AddOrUpdateCookie(
+                _webView.CoreWebView2.CookieManager.CreateCookie(
+                    "zsxq_access_token", accessToken, ".zsxq.com", "/"));
+
+            _initialized = true;
+            Log.Information("BrowserService initialized with token");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to init BrowserService");
+            throw;
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     public async Task<string> FetchJsonAsync(string url)
     {
-        if (_webView?.CoreWebView2 == null)
+        if (!_initialized || _webView?.CoreWebView2 == null)
             throw new InvalidOperationException("BrowserService not initialized");
 
-        await _lock.WaitAsync();
+        await _fetchLock.WaitAsync();
         try
         {
+            var escapedUrl = url.Replace("'", "\\'");
             var js = $@"
                 (async () => {{
                     try {{
-                        const resp = await fetch('{url}', {{
+                        const resp = await fetch('{escapedUrl}', {{
                             credentials: 'include',
                             headers: {{
-                                'Accept': 'application/json',
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                                'Accept': 'application/json'
                             }}
                         }});
                         const text = await resp.text();
@@ -64,12 +80,9 @@ public class BrowserService : IDisposable
 
             var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
 
-            // ExecuteScriptAsync returns JSON-wrapped string: "\"...\"" or "{...}"
             if (string.IsNullOrEmpty(result))
                 throw new Exception("Empty response from WebView2");
 
-            // The result is already a JSON string (double-encoded)
-            // If it starts with ", it's a string result that needs unescaping
             if (result.StartsWith("\""))
             {
                 var unescaped = JsonConvert.DeserializeObject<string>(result);
@@ -80,7 +93,7 @@ public class BrowserService : IDisposable
         }
         finally
         {
-            _lock.Release();
+            _fetchLock.Release();
         }
     }
 

@@ -56,8 +56,8 @@ public partial class MainWindow : Window
         RefreshGroupList();
         RefreshForwardLogs();
 
-        // Init browser and enrich group names
-        _ = InitBrowserAndEnrichAsync(accessToken);
+        // Init browser when window is loaded
+        Loaded += async (s, e) => await InitBrowserAndEnrichAsync(accessToken);
     }
 
     private void ApplyForwarderSettings()
