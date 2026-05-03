@@ -11,7 +11,7 @@ public class ExportService
     public ExportService(TopicService topicService)
     {
         _topicService = topicService;
-        _httpClient = new HttpClient(new WinHttpHandler());
+        _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Add("User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
     }

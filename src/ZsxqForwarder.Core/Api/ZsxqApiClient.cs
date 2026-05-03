@@ -15,10 +15,9 @@ public class ZsxqApiClient
 
     public ZsxqApiClient()
     {
-        var handler = new WinHttpHandler
+        var handler = new HttpClientHandler
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
         };
 
         _httpClient = new HttpClient(handler)
