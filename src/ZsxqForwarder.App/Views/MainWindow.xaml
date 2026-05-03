@@ -68,7 +68,8 @@
                         <TextBox x:Name="GroupUrlInput" Grid.Column="0"
                                  ToolTip="输入星球URL或ID"
                                  Margin="0,0,4,0"/>
-                        <Button Grid.Column="1" Content="+" Padding="8,4"
+                        <Button Grid.Column="1" Content="添加" Padding="12,6"
+                                MinWidth="50"
                                 Click="OnAddGroup"/>
                     </Grid>
 

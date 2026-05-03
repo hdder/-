@@ -119,8 +119,13 @@ public partial class MainWindow : Window
     // Group management
     private void OnAddGroup(object sender, RoutedEventArgs e)
     {
-        var input = GroupUrlInput.Text.Trim();
-        if (string.IsNullOrEmpty(input)) return;
+        var input = GroupUrlInput.Text?.Trim() ?? "";
+        Log.Information("OnAddGroup called with input: '{Input}'", input);
+        if (string.IsNullOrEmpty(input))
+        {
+            MessageBox.Show("请输入星球URL或ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         var groupId = ParseGroupIdFromUrl(input);
         if (groupId == null)
