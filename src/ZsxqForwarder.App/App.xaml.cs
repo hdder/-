@@ -14,6 +14,9 @@ public partial class App : Application
 
     public App()
     {
+        // Use Windows native HTTP handler for proper SSL/TLS support
+        AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false);
+
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Directory.CreateDirectory(AppDataDir);
 
