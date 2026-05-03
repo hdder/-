@@ -1,0 +1,42 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore src/ZsxqForwarder.App/ZsxqForwarder.App.csproj
+
+      - name: Build
+        run: dotnet build src/ZsxqForwarder.App/ZsxqForwarder.App.csproj -c Release --no-restore
+
+      - name: Publish
+        run: |
+          dotnet publish src/ZsxqForwarder.App/ZsxqForwarder.App.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o ./publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZsxqForwarder-win-x64
+          path: ./publish/*
