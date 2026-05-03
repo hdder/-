@@ -61,38 +61,113 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Fetch JSON via WebView2 JavaScript fetch() — reuses login session cookies
+    /// Hybrid fetch: JS fetch first (fast), fall back to page navigation + DOM extraction
     /// </summary>
     private async Task<string> FetchJsonAsync(string url)
     {
         if (_webView.CoreWebView2 == null)
             throw new InvalidOperationException("WebView2 not initialized");
 
-        var escapedUrl = url.Replace("'", "\\'");
-        var js = $@"
-            (async () => {{
-                try {{
-                    const resp = await fetch('{escapedUrl}', {{
-                        credentials: 'include',
-                        headers: {{ 'Accept': 'application/json' }}
-                    }});
-                    return await resp.text();
-                }} catch(e) {{
-                    return JSON.stringify({{ error: e.message }});
-                }}
-            }})()";
-
-        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
-
-        if (string.IsNullOrEmpty(result))
-            throw new Exception("Empty response from WebView2");
-
-        if (result.StartsWith("\""))
+        // Try 1: JS fetch (fast)
+        try
         {
-            return JsonConvert.DeserializeObject<string>(result) ?? result;
+            var escapedUrl = url.Replace("'", "\\'");
+            var js = $@"
+                (async () => {{
+                    try {{
+                        const resp = await fetch('{escapedUrl}', {{
+                            credentials: 'include',
+                            headers: {{ 'Accept': 'application/json' }}
+                        }});
+                        if (!resp.ok) return JSON.stringify({{ error: 'HTTP ' + resp.status }});
+                        return await resp.text();
+                    }} catch(e) {{
+                        return JSON.stringify({{ error: e.message }});
+                    }}
+                }})()";
+
+            var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
+            if (!string.IsNullOrEmpty(result))
+            {
+                var text = result.StartsWith("\"")
+                    ? JsonConvert.DeserializeObject<string>(result) ?? result
+                    : result;
+
+                // Check for fetch error
+                if (text.Contains("\"error\"") && !text.Contains("\"succeeded\""))
+                {
+                    Log.Warning("JS fetch failed: {Text}, falling back to DOM", text);
+                    throw new Exception("Fetch error");
+                }
+
+                return text;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "JS fetch failed, falling back to page navigation");
         }
 
-        return result;
+        // Try 2: Navigate to page and extract from DOM
+        return await FetchFromDomAsync(url);
+    }
+
+    /// <summary>
+    /// Fallback: navigate WebView2 to page, extract data from DOM
+    /// </summary>
+    private async Task<string> FetchFromDomAsync(string apiUrl)
+    {
+        // Extract group ID from API URL to build page URL
+        // e.g. https://api.zsxq.com/v2/groups/12345/topics -> navigate to https://wx.zsxq.com/group/12345
+        var match = Regex.Match(apiUrl, @"groups/(\d+)");
+        if (!match.Success)
+            throw new Exception("Cannot extract group ID for DOM fallback");
+
+        var groupId = match.Groups[1].Value;
+        var pageUrl = $"https://wx.zsxq.com/group/{groupId}";
+
+        // Navigate and wait for page load
+        var tcs = new TaskCompletionSource<bool>();
+        void handler(object? s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+        {
+            tcs.TrySetResult(e.IsSuccess);
+        }
+        _webView.CoreWebView2.NavigationCompleted += handler;
+        _webView.CoreWebView2.Navigate(pageUrl);
+
+        var success = await tcs.Task;
+        _webView.CoreWebView2.NavigationCompleted -= handler;
+
+        if (!success)
+            throw new Exception($"Failed to navigate to {pageUrl}");
+
+        // Wait for content to render
+        await Task.Delay(1000);
+
+        // Extract topics from DOM
+        var extractJs = @"
+            (async () => {
+                try {
+                    // The page uses __NEXT_DATA__ or similar for hydration data
+                    const nextData = document.getElementById('__NEXT_DATA__');
+                    if (nextData) return nextData.textContent;
+
+                    // Or try to intercept the API response from the page's own fetch
+                    const resp = await fetch(window.location.href, { credentials: 'include' });
+                    return await resp.text();
+                } catch(e) {
+                    return JSON.stringify({ error: e.message });
+                }
+            })()";
+
+        var domResult = await _webView.CoreWebView2.ExecuteScriptAsync(extractJs);
+        if (string.IsNullOrEmpty(domResult))
+            throw new Exception("Empty DOM response");
+
+        if (domResult.StartsWith("\""))
+            return JsonConvert.DeserializeObject<string>(domResult) ?? domResult;
+
+        return domResult;
     }
 
     private void ApplyForwarderSettings()
