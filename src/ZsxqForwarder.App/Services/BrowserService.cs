@@ -15,42 +15,6 @@ public class BrowserService : IDisposable
     private bool _initialized;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    public async Task InitAsync(DependencyObject parent)
-    {
-        if (_initialized) return;
-
-        _webView = new Microsoft.Web.WebView2.Wpf.WebView2
-        {
-            Visibility = Visibility.Hidden,
-            Width = 0,
-            Height = 0
-        };
-
-        // Add to visual tree (required for WebView2 initialization)
-        if (parent is FrameworkElement element)
-        {
-            var panel = new System.Windows.Controls.Panel();
-            // WebView2 needs to be in the visual tree
-        }
-
-        await _webView.EnsureCoreWebView2Async(null);
-
-        // Navigate to zsxq to establish cookies context
-        _webView.CoreWebView2.Navigate("https://wx.zsxq.com");
-
-        // Wait for page load
-        var tcs = new TaskCompletionSource<bool>();
-        _webView.CoreWebView2.NavigationCompleted += (s, e) =>
-        {
-            if (e.IsSuccess) tcs.TrySetResult(true);
-            else tcs.TrySetResult(false);
-        };
-        await tcs.Task;
-
-        _initialized = true;
-        Log.Information("BrowserService initialized");
-    }
-
     public async Task InitWithTokenAsync(string accessToken)
     {
         _webView = new Microsoft.Web.WebView2.Wpf.WebView2
