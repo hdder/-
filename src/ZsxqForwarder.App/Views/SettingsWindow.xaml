@@ -18,8 +18,8 @@
         <TabControl Grid.Row="1">
             <!-- Forwarders Tab -->
             <TabItem Header="转发设置">
-                <ScrollViewer Padding="12">
-                    <StackPanel>
+                <ScrollViewer>
+                    <StackPanel Margin="12">
                         <!-- Telegram -->
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
@@ -58,7 +58,7 @@
 
             <!-- Monitor Tab -->
             <TabItem Header="监控设置">
-                <StackPanel Padding="12">
+                <StackPanel Margin="12">
                     <TextBlock Text="轮询间隔（秒）" FontSize="13" Margin="0,0,0,4"/>
                     <Slider x:Name="MonitorInterval" Minimum="10" Maximum="300" Value="30"
                             TickFrequency="10" IsSnapToTickEnabled="True"/>
@@ -69,7 +69,7 @@
 
             <!-- Account Tab -->
             <TabItem Header="账号">
-                <StackPanel Padding="12">
+                <StackPanel Margin="12">
                     <TextBlock Text="当前登录状态" FontSize="13" Margin="0,0,0,8"/>
                     <TextBlock x:Name="LoginStatus" Text="已登录" FontSize="14" FontWeight="Medium"/>
                     <Button Content="退出登录" Margin="0,16,0,0" Padding="16,8"
