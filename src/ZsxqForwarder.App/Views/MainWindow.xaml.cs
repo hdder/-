@@ -119,42 +119,101 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task<string> FetchDynamicsAsync(string url)
     {
-        Log.Information("Fetching dynamics from DOM");
+        Log.Information("Fetching dynamics by iterating group pages");
 
-        // Navigate to dynamics page
+        // Step 1: Navigate to any wx.zsxq.com page to get sidebar
         var currentUrl = await _webView.CoreWebView2.ExecuteScriptAsync("location.href");
-        var onDynamics = currentUrl != null && currentUrl.Contains("wx.zsxq.com/dynamics");
+        var onZsxq = currentUrl != null && currentUrl.Contains("wx.zsxq.com");
 
-        if (!onDynamics)
+        if (!onZsxq)
         {
+            // Navigate to the first group page
             await NavigateAndWaitAsync("https://wx.zsxq.com/dynamics", 4000);
         }
-        else
-        {
-            await ReloadAndWaitAsync();
-        }
 
-        // Debug: log page structure before extraction
-        var debugInfo = await _webView.CoreWebView2.ExecuteScriptAsync(@"
+        // Step 2: Extract group list from sidebar
+        var groupListJson = await _webView.CoreWebView2.ExecuteScriptAsync(@"
             (function() {
-                const appTopics = document.querySelectorAll('app-topic').length;
-                const flowTopics = document.querySelectorAll('app-topic[type=""flow""]').length;
-                const dynamicTopics = document.querySelectorAll('.dynamic-topic').length;
-                const topicContainers = document.querySelectorAll('.topic-container').length;
-                const headers = document.querySelectorAll('app-topic-header').length;
-                return JSON.stringify({appTopics, flowTopics, dynamicTopics, topicContainers, headers, url: location.href});
+                const groups = [];
+                const links = document.querySelectorAll('.group-list a[href*=""/group/""]');
+                for (const a of links) {
+                    const name = a.querySelector('.group-name')?.textContent?.trim();
+                    const href = a.getAttribute('href') || '';
+                    const match = href.match(/\/group\/(\d+)/);
+                    if (name && match) {
+                        groups.push({name: name, group_id: parseInt(match[1]), href: href});
+                    }
+                }
+                return JSON.stringify(groups);
             })()");
-        Log.Information("DOM debug: {Debug}", debugInfo);
 
-        // Extract from DOM
-        var extracted = await ExtractDynamicsFromDomAsync();
-        if (extracted != null)
+        if (string.IsNullOrEmpty(groupListJson) || groupListJson == "null" || groupListJson == "[]")
+            throw new Exception("无法从侧边栏获取星球列表");
+
+        var groupListText = groupListJson.StartsWith("\"")
+            ? JsonConvert.DeserializeObject<string>(groupListJson) ?? groupListJson
+            : groupListJson;
+
+        var groupList = JsonConvert.DeserializeObject<List<GroupInfo>>(groupListText);
+        if (groupList == null || groupList.Count == 0)
+            throw new Exception("星球列表为空");
+
+        Log.Information("Found {Count} groups in sidebar", groupList.Count);
+
+        // Step 3: Visit each group page and extract topics
+        var allDynamics = new List<object>();
+        var allGroups = new List<object>();
+
+        foreach (var group in groupList)
         {
-            Log.Information("Extracted dynamics from DOM ({Len} chars)", extracted.Length);
-            return extracted;
+            Log.Information("Scraping group: {Name} ({Id})", group.name, group.group_id);
+
+            var groupUrl = $"https://wx.zsxq.com{group.href}";
+            await NavigateAndWaitAsync(groupUrl, 4000);
+
+            var pageJson = await ExtractTopicsFromCurrentPageAsync(group.group_id, group.name);
+            if (pageJson != null)
+            {
+                var pageData = JsonConvert.DeserializeObject<PageExtractResult>(pageJson);
+                if (pageData?.dynamics != null)
+                    allDynamics.AddRange(pageData.dynamics);
+
+                Log.Information("  Extracted {Count} topics from {Name}",
+                    pageData?.dynamics?.Count ?? 0, group.name);
+            }
+
+            allGroups.Add(new { group_id = group.group_id, name = group.name, avatar_url = "", background_url = "" });
         }
 
-        throw new Exception("无法从页面提取动态数据");
+        if (allDynamics.Count == 0)
+            throw new Exception("所有星球页面均未提取到动态数据");
+
+        var result = new
+        {
+            succeeded = true,
+            resp_data = new
+            {
+                dynamics = allDynamics,
+                groups = allGroups,
+                is_end = true
+            }
+        };
+
+        var json = JsonConvert.SerializeObject(result);
+        Log.Information("Total extracted {Count} dynamics from {Groups} groups", allDynamics.Count, groupList.Count);
+        return json;
+    }
+
+    private class GroupInfo
+    {
+        public string name { get; set; } = "";
+        public long group_id { get; set; }
+        public string href { get; set; } = "";
+    }
+
+    private class PageExtractResult
+    {
+        public List<object>? dynamics { get; set; }
     }
 
     private async Task NavigateAndWaitAsync(string url, int waitMs = 3000)
@@ -191,62 +250,33 @@ public partial class MainWindow : Window
             await Task.Delay(3000);
     }
 
-    private async Task<string?> ExtractDynamicsFromDomAsync()
+    private async Task<string?> ExtractTopicsFromCurrentPageAsync(long groupId, string groupName)
     {
-        var js = @"
-            (() => {
-                // Step 1: Build group map from sidebar (href contains real group_id)
-                const groupMap = {};
-                const groupLinks = document.querySelectorAll('.group-list a[href*=""/group/""]');
-                for (const a of groupLinks) {
-                    const name = a.querySelector('.group-name')?.textContent?.trim();
-                    const href = a.getAttribute('href') || '';
-                    const match = href.match(/\/group\/(\d+)/);
-                    if (name && match) {
-                        groupMap[name] = parseInt(match[1]);
-                    }
-                }
-
-                // Detect current group_id from URL
-                const urlMatch = window.location.pathname.match(/\/group\/(\d+)/);
-                const currentGroupId = urlMatch ? parseInt(urlMatch[1]) : 0;
-
+        var js = $@"
+            (() => {{
                 const dynamics = [];
 
-                // Step 2: Extract from <app-topic type=""flow""> elements
+                // Extract from <app-topic type=""flow""> elements
                 const appTopics = document.querySelectorAll('app-topic[type=""flow""]');
-                for (const at of appTopics) {
-                    const item = extractAppTopic(at, groupMap, currentGroupId);
+                for (const at of appTopics) {{
+                    const item = extractAppTopic(at);
                     if (item) dynamics.push(item);
-                }
+                }}
 
-                // Step 3: Fallback - extract from .topic-container (legacy)
-                if (dynamics.length === 0) {
+                // Fallback - extract from .topic-container (legacy)
+                if (dynamics.length === 0) {{
                     const topicContainers = document.querySelectorAll('.topic-container');
-                    for (const tc of topicContainers) {
+                    for (const tc of topicContainers) {{
                         const item = extractTopicContainer(tc);
                         if (item) dynamics.push(item);
-                    }
-                }
+                    }}
+                }}
 
                 if (dynamics.length === 0) return null;
 
-                // Step 4: Build groups list from groupMap
-                const groups = [];
-                for (const [name, id] of Object.entries(groupMap)) {
-                    groups.push({group_id: id, name: name, avatar_url: '', background_url: ''});
-                }
+                return JSON.stringify({{ dynamics: dynamics }});
 
-                return JSON.stringify({
-                    succeeded: true,
-                    resp_data: {
-                        dynamics: dynamics,
-                        groups: groups,
-                        is_end: true
-                    }
-                });
-
-                function extractAppTopic(el, gMap, groupId) {
+                function extractAppTopic(el) {{
                     const header = el.querySelector('app-topic-header');
                     if (!header) return null;
 
@@ -258,96 +288,96 @@ public partial class MainWindow : Window
                     // Content: may be hidden (display:none) for image-only posts
                     const contentEl = el.querySelector('.talk-content-container .content');
                     let content = '';
-                    if (contentEl) {
-                        // Temporarily show to get innerText if hidden
+                    if (contentEl) {{
                         const wasHidden = contentEl.style.display === 'none';
                         if (wasHidden) contentEl.style.display = 'block';
                         content = contentEl.innerText?.trim() || '';
                         if (wasHidden) contentEl.style.display = 'none';
-                    }
+                    }}
 
                     // Extract images from app-image-gallery
                     const images = [];
                     const imgEls = el.querySelectorAll('app-image-gallery img.item');
-                    for (const img of imgEls) {
+                    for (const img of imgEls) {{
                         if (img.src) images.push(img.src);
-                    }
+                    }}
 
                     // Extract links from content
                     const links = [];
                     const linkEls = el.querySelectorAll('.talk-content-container .content a.link-of-topic');
-                    for (const a of linkEls) {
-                        links.push({text: a.textContent?.trim() || '', href: a.href || ''});
-                    }
+                    for (const a of linkEls) {{
+                        links.push({{text: a.textContent?.trim() || '', href: a.href || ''}});
+                    }}
 
-                    // Skip if no meaningful content
                     if (!content && images.length === 0 && !authorName) return null;
 
-                    // Build text with image URLs appended
                     let fullText = content;
-                    if (images.length > 0) {
+                    if (images.length > 0) {{
                         fullText += (fullText ? '\n' : '') + images.map(u => '[图片]').join('\n');
-                    }
-                    if (links.length > 0) {
+                    }}
+                    if (links.length > 0) {{
                         fullText += (fullText ? '\n' : '') + links.map(l => l.text + ': ' + l.href).join('\n');
-                    }
+                    }}
 
-                    return {
+                    return {{
                         dynamic_id: 0,
                         action: 'create_topic',
                         create_time: dateText,
-                        topic: {
+                        topic: {{
                             topic_id: 0,
                             type: 'talk',
-                            group: groupId ? {group_id: groupId, name: ''} : null,
-                            talk: {
-                                owner: {name: authorName, avatar_url: avatar},
+                            group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
+                            talk: {{
+                                owner: {{name: authorName, avatar_url: avatar}},
                                 text: fullText
-                            },
+                            }},
                             likes_count: 0,
                             comments_count: 0,
                             is_digest: isDigest
-                        },
-                        group: groupId ? {
-                            group_id: groupId,
-                            name: '',
+                        }},
+                        group: {{
+                            group_id: {groupId},
+                            name: '{groupName.Replace("'", "\\'")}',
                             avatar_url: '',
                             background_url: ''
-                        } : null,
+                        }},
                         images: images,
                         links: links
-                    };
-                }
+                    }};
+                }}
 
-                function extractTopicContainer(el) {
+                function extractTopicContainer(el) {{
                     const avatar = el.querySelector('.header-container .avatar')?.src || '';
                     const authorName = el.querySelector('.header-container .role')?.textContent?.trim() || '';
                     const dateText = el.querySelector('.header-container .date')?.textContent?.trim() || '';
                     const content = el.querySelector('.talk-content-container .content')?.innerText?.trim() || '';
-                    const likesText = el.querySelector('.like')?.nextElementSibling?.textContent?.trim() || '0';
-                    const commentsText = el.querySelector('.comment')?.nextElementSibling?.textContent?.trim() || '0';
 
                     if (!content && !authorName) return null;
 
-                    return {
+                    return {{
                         dynamic_id: 0,
                         action: 'create_topic',
                         create_time: dateText,
-                        topic: {
+                        topic: {{
                             topic_id: 0,
                             type: 'talk',
-                            group: null,
-                            talk: {
-                                owner: {name: authorName, avatar_url: avatar},
+                            group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
+                            talk: {{
+                                owner: {{name: authorName, avatar_url: avatar}},
                                 text: content
-                            },
-                            likes_count: parseInt(likesText) || 0,
-                            comments_count: parseInt(commentsText) || 0
-                        },
-                        group: null
-                    };
-                }
-            })()";
+                            }},
+                            likes_count: 0,
+                            comments_count: 0
+                        }},
+                        group: {{
+                            group_id: {groupId},
+                            name: '{groupName.Replace("'", "\\'")}',
+                            avatar_url: '',
+                            background_url: ''
+                        }}
+                    }};
+                }}
+            }})()";
 
         var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
         if (string.IsNullOrEmpty(result) || result.Trim() == "null")
@@ -357,7 +387,7 @@ public partial class MainWindow : Window
             ? JsonConvert.DeserializeObject<string>(result) ?? result
             : result;
 
-        if (text.Contains("\"succeeded\"")) return text;
+        if (text.Contains("\"dynamics\"")) return text;
         return null;
     }
 
