@@ -9,15 +9,15 @@ public static class SignatureHelper
     private const string AppVersion = "3.11.0";
     private const string Platform = "ios";
 
-    public static string GenerateSignature(string path, Dictionary<string, string>? businessParams = null)
+    public static (string Signature, long Timestamp) GenerateSignature(string path, Dictionary<string, string>? businessParams = null)
     {
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         var allParams = new Dictionary<string, string>
         {
             ["app_version"] = AppVersion,
             ["platform"] = Platform,
-            ["timestamp"] = timestamp
+            ["timestamp"] = timestamp.ToString()
         };
 
         if (businessParams != null)
@@ -35,12 +35,7 @@ public static class SignatureHelper
         var paramsStr = string.Join("&", sortedParams);
         var signStr = $"{path}&{paramsStr}&{Secret}";
 
-        return Md5Hash(signStr);
-    }
-
-    public static long GetTimestamp()
-    {
-        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return (Md5Hash(signStr), timestamp);
     }
 
     private static string Md5Hash(string input)

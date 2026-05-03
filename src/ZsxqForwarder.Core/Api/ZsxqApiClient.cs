@@ -44,8 +44,7 @@ public class ZsxqApiClient
     public async Task<List<Group>> GetGroupsAsync()
     {
         var path = "/v2/groups";
-        var signature = SignatureHelper.GenerateSignature(path);
-        var timestamp = SignatureHelper.GetTimestamp();
+        var (signature, timestamp) = SignatureHelper.GenerateSignature(path);
 
         var request = new HttpRequestMessage(HttpMethod.Get,
             $"{path}?app_version=3.11.0&platform=ios&timestamp={timestamp}&sign={signature}");
@@ -77,8 +76,7 @@ public class ZsxqApiClient
             businessParams["end_time"] = endTime.Value.ToString();
         }
 
-        var signature = SignatureHelper.GenerateSignature(path, businessParams);
-        var timestamp = SignatureHelper.GetTimestamp();
+        var (signature, timestamp) = SignatureHelper.GenerateSignature(path, businessParams);
 
         var queryParams = new List<string>
         {
@@ -113,8 +111,7 @@ public class ZsxqApiClient
     public async Task<List<Comment>> GetCommentsAsync(long topicId)
     {
         var path = $"/v2/topics/{topicId}/comments";
-        var signature = SignatureHelper.GenerateSignature(path);
-        var timestamp = SignatureHelper.GetTimestamp();
+        var (signature, timestamp) = SignatureHelper.GenerateSignature(path);
 
         var request = new HttpRequestMessage(HttpMethod.Get,
             $"{path}?app_version=3.11.0&platform=ios&timestamp={timestamp}&sign={signature}");
