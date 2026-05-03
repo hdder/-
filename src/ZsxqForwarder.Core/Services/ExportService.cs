@@ -67,8 +67,8 @@ public class ExportService
                             try
                             {
                                 var fileName = $"topic_{topic.TopicId}_{Guid.NewGuid():N[..8]}.jpg";
-                                var filePath = Path.Combine(imagesDir, fileName);
-                                await DownloadFileAsync(imgUrl, filePath, cancellationToken);
+                                var imgPath = Path.Combine(imagesDir, fileName);
+                                await DownloadFileAsync(imgUrl, imgPath, cancellationToken);
                             }
                             catch { /* Skip failed downloads */ }
                         }
