@@ -195,16 +195,20 @@ public partial class MainWindow : Window
                     }
                 }
 
+                // Detect current group_id from URL
+                const urlMatch = window.location.pathname.match(/\/group\/(\d+)/);
+                const currentGroupId = urlMatch ? parseInt(urlMatch[1]) : 0;
+
                 const dynamics = [];
 
-                // Step 2: Extract posts from .dynamic-topic (/dynamics page)
-                const dynamicTopics = document.querySelectorAll('.dynamic-topic');
-                for (const dt of dynamicTopics) {
-                    const item = extractDynamicTopic(dt, groupMap);
+                // Step 2: Extract from <app-topic type=""flow""> elements
+                const appTopics = document.querySelectorAll('app-topic[type=""flow""]');
+                for (const at of appTopics) {
+                    const item = extractAppTopic(at, groupMap, currentGroupId);
                     if (item) dynamics.push(item);
                 }
 
-                // Step 3: Fallback - extract from .topic-container (/group/{id} page)
+                // Step 3: Fallback - extract from .topic-container (legacy)
                 if (dynamics.length === 0) {
                     const topicContainers = document.querySelectorAll('.topic-container');
                     for (const tc of topicContainers) {
@@ -230,18 +234,51 @@ public partial class MainWindow : Window
                     }
                 });
 
-                function extractDynamicTopic(el, gMap) {
-                    const avatar = el.querySelector('.author .avatar')?.src || '';
-                    const authorName = el.querySelector('.author .role')?.textContent?.trim() || '';
-                    const dateText = el.querySelector('.author .date')?.textContent?.trim() || '';
-                    const content = el.querySelector('.talk-content-container .content')?.innerText?.trim() || '';
-                    const groupName = el.querySelector('.from-group .group-name')?.textContent?.trim() || '';
-                    const groupAvatar = el.querySelector('.from-group .group-avatar')?.src || '';
-                    const likes = parseInt(el.querySelector('.like-count')?.textContent?.trim() || '0');
-                    const comments = parseInt(el.querySelector('.comment-count')?.textContent?.trim() || '0');
-                    const groupId = gMap[groupName] || 0;
+                function extractAppTopic(el, gMap, groupId) {
+                    const header = el.querySelector('app-topic-header');
+                    if (!header) return null;
 
-                    if (!content && !authorName) return null;
+                    const avatar = header.querySelector('.avatar')?.src || '';
+                    const authorName = header.querySelector('.role')?.textContent?.trim() || '';
+                    const dateText = header.querySelector('.date')?.textContent?.trim() || '';
+                    const isDigest = !!header.querySelector('.digest');
+
+                    // Content: may be hidden (display:none) for image-only posts
+                    const contentEl = el.querySelector('.talk-content-container .content');
+                    let content = '';
+                    if (contentEl) {
+                        // Temporarily show to get innerText if hidden
+                        const wasHidden = contentEl.style.display === 'none';
+                        if (wasHidden) contentEl.style.display = 'block';
+                        content = contentEl.innerText?.trim() || '';
+                        if (wasHidden) contentEl.style.display = 'none';
+                    }
+
+                    // Extract images from app-image-gallery
+                    const images = [];
+                    const imgEls = el.querySelectorAll('app-image-gallery img.item');
+                    for (const img of imgEls) {
+                        if (img.src) images.push(img.src);
+                    }
+
+                    // Extract links from content
+                    const links = [];
+                    const linkEls = el.querySelectorAll('.talk-content-container .content a.link-of-topic');
+                    for (const a of linkEls) {
+                        links.push({text: a.textContent?.trim() || '', href: a.href || ''});
+                    }
+
+                    // Skip if no meaningful content
+                    if (!content && images.length === 0 && !authorName) return null;
+
+                    // Build text with image URLs appended
+                    let fullText = content;
+                    if (images.length > 0) {
+                        fullText += (fullText ? '\n' : '') + images.map(u => '[图片]').join('\n');
+                    }
+                    if (links.length > 0) {
+                        fullText += (fullText ? '\n' : '') + links.map(l => l.text + ': ' + l.href).join('\n');
+                    }
 
                     return {
                         dynamic_id: 0,
@@ -250,20 +287,23 @@ public partial class MainWindow : Window
                         topic: {
                             topic_id: 0,
                             type: 'talk',
-                            group: {group_id: groupId, name: groupName},
+                            group: groupId ? {group_id: groupId, name: ''} : null,
                             talk: {
                                 owner: {name: authorName, avatar_url: avatar},
-                                text: content
+                                text: fullText
                             },
-                            likes_count: likes,
-                            comments_count: comments
+                            likes_count: 0,
+                            comments_count: 0,
+                            is_digest: isDigest
                         },
-                        group: {
+                        group: groupId ? {
                             group_id: groupId,
-                            name: groupName,
-                            avatar_url: groupAvatar,
+                            name: '',
+                            avatar_url: '',
                             background_url: ''
-                        }
+                        } : null,
+                        images: images,
+                        links: links
                     };
                 }
 
