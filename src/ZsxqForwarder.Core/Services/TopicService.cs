@@ -68,4 +68,42 @@ public class TopicService
             return result.RespData.Comments;
         throw new Exception($"Failed to get comments");
     }
+
+    public async Task<(List<Dynamic> Dynamics, bool IsEnd)> FetchDynamicsPageAsync(string? endTime = null, int count = 30)
+    {
+        var url = $"https://api.zsxq.com/v2/dynamics?scope=general&count={count}";
+        if (!string.IsNullOrEmpty(endTime))
+            url += $"&end_time={Uri.EscapeDataString(endTime)}";
+
+        var json = await _fetchJson(url);
+        var result = JsonConvert.DeserializeObject<ApiResponse<DynamicsRespData>>(json);
+        if (result?.Succeeded == true && result.RespData != null)
+            return (result.RespData.Dynamics, result.RespData.IsEnd);
+        throw new Exception($"Failed to fetch dynamics: {result?.Error}");
+    }
+
+    public async Task<List<Dynamic>> FetchAllDynamicsAsync(
+        IProgress<(int Loaded, bool IsComplete)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var allDynamics = new List<Dynamic>();
+        string? endTime = null;
+        var isEnd = false;
+
+        while (!isEnd && !cancellationToken.IsCancellationRequested)
+        {
+            var (dynamics, pageEnd) = await FetchDynamicsPageAsync(endTime, 30);
+            isEnd = pageEnd;
+
+            if (dynamics.Count == 0) break;
+
+            allDynamics.AddRange(dynamics);
+            progress?.Report((allDynamics.Count, isEnd));
+
+            // Use last dynamic's create_time for pagination
+            endTime = dynamics.Last().CreateTimeStr;
+        }
+
+        return allDynamics;
+    }
 }

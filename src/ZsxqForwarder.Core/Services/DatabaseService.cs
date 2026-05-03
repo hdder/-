@@ -27,7 +27,9 @@ public class DatabaseService
             CREATE TABLE IF NOT EXISTS Groups (
                 GroupId INTEGER PRIMARY KEY,
                 Name TEXT NOT NULL,
-                Url TEXT NOT NULL
+                Url TEXT NOT NULL DEFAULT '',
+                AvatarUrl TEXT NOT NULL DEFAULT '',
+                BackgroundUrl TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS ForwardRules (
@@ -68,7 +70,25 @@ public class DatabaseService
                 Key TEXT PRIMARY KEY,
                 Value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS SyncState (
+                Key TEXT PRIMARY KEY,
+                Value TEXT NOT NULL
+            );
         ");
+
+        // Migrate existing DB: add new columns if missing
+        Migrate(conn);
+    }
+
+    private static void Migrate(SqliteConnection conn)
+    {
+        // Add AvatarUrl column to Groups if missing
+        try { conn.Execute("ALTER TABLE Groups ADD COLUMN AvatarUrl TEXT NOT NULL DEFAULT ''"); }
+        catch { /* column already exists */ }
+
+        try { conn.Execute("ALTER TABLE Groups ADD COLUMN BackgroundUrl TEXT NOT NULL DEFAULT ''"); }
+        catch { /* column already exists */ }
     }
 
     // Groups
@@ -81,7 +101,7 @@ public class DatabaseService
     public void SaveGroup(GroupConfig group)
     {
         using var conn = new SqliteConnection(ConnectionString);
-        conn.Execute("INSERT OR REPLACE INTO Groups (GroupId, Name, Url) VALUES (@GroupId, @Name, @Url)", group);
+        conn.Execute("INSERT OR REPLACE INTO Groups (GroupId, Name, Url, AvatarUrl, BackgroundUrl) VALUES (@GroupId, @Name, @Url, @AvatarUrl, @BackgroundUrl)", group);
     }
 
     public void RemoveGroup(long groupId)
@@ -89,6 +109,14 @@ public class DatabaseService
         using var conn = new SqliteConnection(ConnectionString);
         conn.Execute("DELETE FROM Groups WHERE GroupId = @GroupId", new { GroupId = groupId });
         conn.Execute("DELETE FROM ForwardRules WHERE GroupId = @GroupId", new { GroupId = groupId });
+    }
+
+    public void SaveDiscoveredGroup(long groupId, string name, string avatarUrl, string backgroundUrl)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Execute(
+            "INSERT OR REPLACE INTO Groups (GroupId, Name, Url, AvatarUrl, BackgroundUrl) VALUES (@GroupId, @Name, @Url, @AvatarUrl, @BackgroundUrl)",
+            new { GroupId = groupId, Name = name, Url = $"https://wx.zsxq.com/group/{groupId}", AvatarUrl = avatarUrl, BackgroundUrl = backgroundUrl });
     }
 
     // Forward Rules
@@ -139,6 +167,104 @@ public class DatabaseService
         return JsonConvert.DeserializeObject<Topic>(raw);
     }
 
+    public List<Topic> GetTopicsByGroup(long groupId, int limit = 50, int offset = 0)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        var raws = conn.Query<string>(
+            "SELECT RawJson FROM Topics WHERE GroupId = @GroupId ORDER BY CreateTime DESC LIMIT @Limit OFFSET @Offset",
+            new { GroupId = groupId, Limit = limit, Offset = offset }).ToList();
+        return raws.Select(r => JsonConvert.DeserializeObject<Topic>(r)!).ToList();
+    }
+
+    public List<Topic> GetTopicsByGroupAndDate(long groupId, DateTime date)
+    {
+        var start = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var end = new DateTimeOffset(date.Year, date.Month, date.Day, 23, 59, 59, TimeSpan.Zero).ToUnixTimeMilliseconds();
+
+        using var conn = new SqliteConnection(ConnectionString);
+        var raws = conn.Query<string>(
+            "SELECT RawJson FROM Topics WHERE GroupId = @GroupId AND CreateTime >= @Start AND CreateTime <= @End ORDER BY CreateTime DESC",
+            new { GroupId = groupId, Start = start, End = end }).ToList();
+        return raws.Select(r => JsonConvert.DeserializeObject<Topic>(r)!).ToList();
+    }
+
+    public int GetTopicCountByGroup(long groupId)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        return conn.QueryFirstOrDefault<int>("SELECT COUNT(*) FROM Topics WHERE GroupId = @GroupId", new { GroupId = groupId });
+    }
+
+    // Batch save dynamics (transaction-wrapped)
+    public void SaveDynamicsBatch(List<Dynamic> dynamics)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+
+        foreach (var d in dynamics)
+        {
+            // Upsert group
+            if (d.Group != null)
+            {
+                conn.Execute(
+                    "INSERT OR REPLACE INTO Groups (GroupId, Name, Url, AvatarUrl, BackgroundUrl) VALUES (@GroupId, @Name, @Url, @AvatarUrl, @BackgroundUrl)",
+                    new
+                    {
+                        GroupId = d.Group.GroupId,
+                        Name = d.Group.Name,
+                        Url = $"https://wx.zsxq.com/group/{d.Group.GroupId}",
+                        AvatarUrl = d.Group.AvatarUrl,
+                        BackgroundUrl = d.Group.BackgroundUrl
+                    },
+                    tx);
+            }
+
+            // Save topic if action is create_topic
+            if (d.Topic != null && d.Action == "create_topic")
+            {
+                var topic = d.Topic;
+                var groupId = d.Group?.GroupId ?? topic.Group?.GroupId ?? 0;
+                var author = topic.Talk?.Owner?.Name ?? topic.Task?.Owner?.Name ?? topic.Question?.Owner?.Name ?? "Unknown";
+                var content = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
+                var createTime = topic.CreateTime > 0 ? topic.CreateTime : d.CreateTimeMs;
+
+                // Use TopicId as dedup key: INSERT OR IGNORE
+                conn.Execute(
+                    @"INSERT OR IGNORE INTO Topics (TopicId, GroupId, Type, Author, Content, CreateTime, RawJson)
+                      VALUES (@TopicId, @GroupId, @Type, @Author, @Content, @CreateTime, @RawJson)",
+                    new
+                    {
+                        TopicId = topic.TopicId,
+                        GroupId = groupId,
+                        Type = topic.Type,
+                        Author = author,
+                        Content = content,
+                        CreateTime = createTime,
+                        RawJson = JsonConvert.SerializeObject(topic)
+                    },
+                    tx);
+            }
+        }
+
+        // Update sync state
+        if (dynamics.Count > 0)
+        {
+            var maxDynamicId = dynamics.Max(d => d.DynamicId);
+            conn.Execute("INSERT OR REPLACE INTO SyncState (Key, Value) VALUES ('last_dynamic_id', @Value)",
+                new { Value = maxDynamicId.ToString() }, tx);
+            conn.Execute("INSERT OR REPLACE INTO SyncState (Key, Value) VALUES ('last_sync_time', @Value)",
+                new { Value = DateTime.Now.ToString("O") }, tx);
+        }
+
+        tx.Commit();
+    }
+
+    public long GetLastSyncedDynamicId()
+    {
+        var val = GetSyncState("last_dynamic_id");
+        return long.TryParse(val, out var id) ? id : 0;
+    }
+
     // Forward Log
     public void AddForwardLog(ForwardLogEntry entry)
     {
@@ -181,6 +307,19 @@ public class DatabaseService
     public void SetMonitorInterval(int seconds)
     {
         SetSetting("MonitorInterval", seconds.ToString());
+    }
+
+    // SyncState
+    public string? GetSyncState(string key)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        return conn.QueryFirstOrDefault<string>("SELECT Value FROM SyncState WHERE Key = @Key", new { Key = key });
+    }
+
+    public void SetSyncState(string key, string value)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Execute("INSERT OR REPLACE INTO SyncState (Key, Value) VALUES (@Key, @Value)", new { Key = key, Value = value });
     }
 }
 

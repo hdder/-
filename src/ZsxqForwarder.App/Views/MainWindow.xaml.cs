@@ -1,6 +1,4 @@
-using System.IO;
 using System.Collections.ObjectModel;
-using System.Text.RegularExpressions;
 using System.Windows;
 using Newtonsoft.Json;
 using Serilog;
@@ -18,6 +16,7 @@ public partial class MainWindow : Window
     private readonly ForwardService _forwardService;
     private readonly AuthService _authService;
     private readonly DatabaseService _db;
+    private readonly SyncService _syncService;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
     private ObservableCollection<GroupConfig> _groups = [];
@@ -25,8 +24,7 @@ public partial class MainWindow : Window
     private ObservableCollection<ForwardLogEntry> _forwardLogs = [];
     private List<Topic> _rawTopics = [];
     private GroupConfig? _selectedGroup;
-    private long? _lastEndTime;
-    private bool _hasMoreTopics = true;
+    private int _topicOffset;
 
     public MainWindow(string accessToken, DatabaseService db, Microsoft.Web.WebView2.Wpf.WebView2 webView)
     {
@@ -37,137 +35,70 @@ public partial class MainWindow : Window
         _authService = new AuthService();
         _authService.SaveToken(accessToken);
 
-        // TopicService uses WebView2's ExecuteScriptAsync for API calls
         _topicService = new TopicService(FetchJsonAsync);
         _exportService = new ExportService(_topicService);
 
-        // Setup forwarders from DB
         _forwardService = new ForwardService();
         _forwardService.SetDatabase(_db);
         ApplyForwarderSettings();
 
-        // Setup monitor
         _monitorService = new MonitorService(_topicService, _forwardService);
         _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
 
-        // Load groups from DB
+        _syncService = new SyncService(_topicService, _db);
+        _syncService.ProgressChanged += OnSyncProgress;
+        _syncService.SyncCompleted += OnSyncCompleted;
+        _syncService.SyncError += OnSyncError;
+
         RefreshGroupList();
         RefreshForwardLogs();
 
-        // Enrich group names from API (WebView2 already ready)
-        _ = EnrichGroupNamesAsync();
+        _ = RunInitialSyncAsync();
     }
 
     /// <summary>
-    /// Hybrid fetch: JS fetch first (fast), fall back to page navigation + DOM extraction
+    /// Hybrid fetch: JS fetch in WebView2 context (wx.zsxq.com).
+    /// The page's service worker adds x-signature headers automatically.
     /// </summary>
     private async Task<string> FetchJsonAsync(string url)
     {
         if (_webView.CoreWebView2 == null)
             throw new InvalidOperationException("WebView2 not initialized");
 
-        // Try 1: JS fetch (fast)
-        try
-        {
-            var escapedUrl = url.Replace("'", "\\'");
-            var js = $@"
-                (async () => {{
-                    try {{
-                        const resp = await fetch('{escapedUrl}', {{
-                            credentials: 'include',
-                            headers: {{ 'Accept': 'application/json' }}
-                        }});
-                        if (!resp.ok) return JSON.stringify({{ error: 'HTTP ' + resp.status }});
-                        return await resp.text();
-                    }} catch(e) {{
-                        return JSON.stringify({{ error: e.message }});
-                    }}
-                }})()";
-
-            var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
-            if (!string.IsNullOrEmpty(result))
-            {
-                var text = result.StartsWith("\"")
-                    ? JsonConvert.DeserializeObject<string>(result) ?? result
-                    : result;
-
-                // Check for fetch error
-                if (text.Contains("\"error\"") && !text.Contains("\"succeeded\""))
-                {
-                    Log.Warning("JS fetch failed: {Text}, falling back to DOM", text);
-                    throw new Exception("Fetch error");
-                }
-
-                return text;
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "JS fetch failed, falling back to page navigation");
-        }
-
-        // Try 2: Navigate to page and extract from DOM
-        return await FetchFromDomAsync(url);
-    }
-
-    /// <summary>
-    /// Fallback: navigate WebView2 to page, extract data from DOM
-    /// </summary>
-    private async Task<string> FetchFromDomAsync(string apiUrl)
-    {
-        // Extract group ID from API URL to build page URL
-        // e.g. https://api.zsxq.com/v2/groups/12345/topics -> navigate to https://wx.zsxq.com/group/12345
-        var match = Regex.Match(apiUrl, @"groups/(\d+)");
-        if (!match.Success)
-            throw new Exception("Cannot extract group ID for DOM fallback");
-
-        var groupId = match.Groups[1].Value;
-        var pageUrl = $"https://wx.zsxq.com/group/{groupId}";
-
-        // Navigate and wait for page load
-        var tcs = new TaskCompletionSource<bool>();
-        void handler(object? s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
-        {
-            tcs.TrySetResult(e.IsSuccess);
-        }
-        _webView.CoreWebView2.NavigationCompleted += handler;
-        _webView.CoreWebView2.Navigate(pageUrl);
-
-        var success = await tcs.Task;
-        _webView.CoreWebView2.NavigationCompleted -= handler;
-
-        if (!success)
-            throw new Exception($"Failed to navigate to {pageUrl}");
-
-        // Wait for content to render
-        await Task.Delay(1000);
-
-        // Extract topics from DOM
-        var extractJs = @"
-            (async () => {
-                try {
-                    // The page uses __NEXT_DATA__ or similar for hydration data
-                    const nextData = document.getElementById('__NEXT_DATA__');
-                    if (nextData) return nextData.textContent;
-
-                    // Or try to intercept the API response from the page's own fetch
-                    const resp = await fetch(window.location.href, { credentials: 'include' });
+        var escapedUrl = url.Replace("'", "\\'");
+        var js = $@"
+            (async () => {{
+                try {{
+                    const resp = await fetch('{escapedUrl}', {{
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'application/json' }}
+                    }});
+                    if (!resp.ok) return JSON.stringify({{ error: 'HTTP ' + resp.status }});
                     return await resp.text();
-                } catch(e) {
-                    return JSON.stringify({ error: e.message });
-                }
-            })()";
+                }} catch(e) {{
+                    return JSON.stringify({{ error: e.message }});
+                }}
+            }})()";
 
-        var domResult = await _webView.CoreWebView2.ExecuteScriptAsync(extractJs);
-        if (string.IsNullOrEmpty(domResult))
-            throw new Exception("Empty DOM response");
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
+        if (!string.IsNullOrEmpty(result))
+        {
+            var text = result.StartsWith("\"")
+                ? JsonConvert.DeserializeObject<string>(result) ?? result
+                : result;
 
-        if (domResult.StartsWith("\""))
-            return JsonConvert.DeserializeObject<string>(domResult) ?? domResult;
+            if (text.Contains("\"error\"") && !text.Contains("\"succeeded\""))
+            {
+                Log.Warning("JS fetch failed: {Text}", text);
+                throw new Exception("Fetch error: " + text);
+            }
 
-        return domResult;
+            return text;
+        }
+
+        throw new Exception("Empty response from WebView2");
     }
 
     private void ApplyForwarderSettings()
@@ -196,6 +127,7 @@ public partial class MainWindow : Window
         return f;
     }
 
+    // Groups
     private void RefreshGroupList()
     {
         _groups = new ObservableCollection<GroupConfig>(_db.GetGroups());
@@ -208,144 +140,88 @@ public partial class MainWindow : Window
         ForwardLogList.ItemsSource = _forwardLogs;
     }
 
-    private async Task EnrichGroupNamesAsync()
-    {
-        try
-        {
-            var apiGroups = await _topicService.GetGroupsAsync();
-            var changed = false;
-            foreach (var g in _groups)
-            {
-                var match = apiGroups.FirstOrDefault(ag => ag.GroupId == g.GroupId);
-                if (match != null && g.Name != match.Name)
-                {
-                    g.Name = match.Name;
-                    _db.SaveGroup(g);
-                    changed = true;
-                }
-            }
-            if (changed)
-            {
-                RefreshGroupList();
-            }
-        }
-        catch { }
-    }
-
-    // Group management
-    private void OnAddGroup(object sender, RoutedEventArgs e)
-    {
-        var input = GroupUrlInput.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(input))
-        {
-            MessageBox.Show("请输入星球URL或ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var groupId = ParseGroupIdFromUrl(input);
-        if (groupId == null)
-        {
-            MessageBox.Show("无法解析星球ID", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (_groups.Any(g => g.GroupId == groupId.Value))
-        {
-            MessageBox.Show("该星球已添加", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var groupConfig = new GroupConfig
-        {
-            GroupId = groupId.Value,
-            Name = $"星球 {groupId.Value}",
-            Url = input.Contains("/") ? input : $"https://wx.zsxq.com/group/{groupId.Value}"
-        };
-
-        _db.SaveGroup(groupConfig);
-        RefreshGroupList();
-        GroupUrlInput.Text = "";
-
-        _ = EnrichGroupNamesAsync();
-    }
-
-    private void OnRemoveGroup(object sender, RoutedEventArgs e)
-    {
-        if (sender is not System.Windows.Controls.Button btn) return;
-        if (btn.Tag is not long groupId) return;
-
-        _db.RemoveGroup(groupId);
-        RefreshGroupList();
-    }
-
     private void OnGroupSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (GroupList.SelectedItem is not GroupConfig group) return;
 
         _selectedGroup = group;
-        _lastEndTime = null;
-        _hasMoreTopics = true;
-        _rawTopics.Clear();
-        _topics.Clear();
+        _topicOffset = 0;
+        TopicDatePicker.SelectedDate = null;
 
         TopicTitle.Text = group.Name;
-        TopicCount.Text = "";
-        BtnLoadMore.Visibility = Visibility.Collapsed;
-        TopicsLoading.Visibility = Visibility.Visible;
-
-        _ = LoadTopicsAsync();
+        LoadTopicsFromDb();
     }
 
-    private async Task LoadTopicsAsync()
+    private void LoadTopicsFromDb()
     {
         if (_selectedGroup == null) return;
 
-        try
+        var pageSize = 50;
+        var topics = _db.GetTopicsByGroup(_selectedGroup.GroupId, pageSize, _topicOffset);
+
+        _rawTopics.Clear();
+        _topics.Clear();
+
+        foreach (var topic in topics)
         {
-            var url = $"https://api.zsxq.com/v2/groups/{_selectedGroup.GroupId}/topics?count=20&scope=all";
-            if (_lastEndTime.HasValue)
-                url += $"&end_time={_lastEndTime.Value}";
-
-            var json = await FetchJsonAsync(url);
-            var result = Newtonsoft.Json.JsonConvert.DeserializeObject<ZsxqForwarder.Core.Models.ApiResponse<ZsxqForwarder.Core.Models.TopicsRespData>>(json);
-            if (result?.Succeeded != true || result.RespData == null)
-                throw new Exception(result?.Error ?? "Failed to load topics");
-
-            var topics = result.RespData.Topics;
-            _hasMoreTopics = !result.RespData.IsEnd;
-
-            foreach (var topic in topics)
-            {
-                _rawTopics.Add(topic);
-                _topics.Add(new TopicDisplay(topic));
-            }
-
-            TopicList.ItemsSource = _topics;
-            TopicCount.Text = $"({_topics.Count} 条)";
-
-            if (_rawTopics.Count > 0)
-            {
-                _lastEndTime = _rawTopics.Min(t => t.CreateTime);
-            }
-
-            BtnLoadMore.Visibility = _hasMoreTopics ? Visibility.Visible : Visibility.Collapsed;
-            TopicsLoading.Visibility = Visibility.Collapsed;
-
-            SyncTime.Text = $"最后同步: {DateTime.Now:HH:mm:ss}";
+            _rawTopics.Add(topic);
+            _topics.Add(new TopicDisplay(topic));
         }
-        catch (Exception ex)
+
+        TopicList.ItemsSource = _topics;
+        var total = _db.GetTopicCountByGroup(_selectedGroup.GroupId);
+        TopicCount.Text = $"({_topics.Count} / {total} 条)";
+
+        BtnLoadMore.Visibility = topics.Count >= pageSize ? Visibility.Visible : Visibility.Collapsed;
+        TopicsLoading.Visibility = Visibility.Collapsed;
+    }
+
+    // Date filter
+    private void OnDateChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_selectedGroup == null || TopicDatePicker.SelectedDate == null) return;
+
+        var date = TopicDatePicker.SelectedDate.Value;
+        var topics = _db.GetTopicsByGroupAndDate(_selectedGroup.GroupId, date);
+
+        _topics.Clear();
+        _rawTopics.Clear();
+        foreach (var topic in topics)
         {
-            Log.Error(ex, "Failed to load topics");
-            TopicsLoading.Visibility = Visibility.Collapsed;
-            MessageBox.Show($"加载帖子失败: {ex.Message}", "错误",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            _rawTopics.Add(topic);
+            _topics.Add(new TopicDisplay(topic));
         }
+        TopicList.ItemsSource = _topics;
+        TopicCount.Text = $"({_topics.Count} 条)";
+        BtnLoadMore.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnClearDateFilter(object sender, RoutedEventArgs e)
+    {
+        TopicDatePicker.SelectedDate = null;
+        _topicOffset = 0;
+        if (_selectedGroup != null)
+            LoadTopicsFromDb();
     }
 
     private async void OnLoadMoreClick(object sender, RoutedEventArgs e)
     {
+        if (_selectedGroup == null) return;
         BtnLoadMore.IsEnabled = false;
-        await LoadTopicsAsync();
+
+        _topicOffset += 50;
+        var topics = _db.GetTopicsByGroup(_selectedGroup.GroupId, 50, _topicOffset);
+
+        foreach (var topic in topics)
+        {
+            _rawTopics.Add(topic);
+            _topics.Add(new TopicDisplay(topic));
+        }
+
+        var total = _db.GetTopicCountByGroup(_selectedGroup.GroupId);
+        TopicCount.Text = $"({_topics.Count} / {total} 条)";
+
+        BtnLoadMore.Visibility = topics.Count >= 50 ? Visibility.Visible : Visibility.Collapsed;
         BtnLoadMore.IsEnabled = true;
     }
 
@@ -406,7 +282,69 @@ public partial class MainWindow : Window
         }
     }
 
-    // Resend (补发)
+    // Sync
+    private async Task RunInitialSyncAsync()
+    {
+        var initialDone = _db.GetSyncState("initial_sync_done");
+        if (initialDone == "true")
+        {
+            await _syncService.IncrementalSyncAsync();
+            Dispatcher.Invoke(RefreshGroupList);
+        }
+        else
+        {
+            Dispatcher.Invoke(() => SyncPanel.Visibility = Visibility.Visible);
+            await _syncService.FullSyncAsync();
+        }
+    }
+
+    private void OnSyncProgress(object? sender, SyncProgressEventArgs e)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            SyncPanel.Visibility = Visibility.Visible;
+            SyncProgress.IsIndeterminate = !e.IsComplete;
+            SyncStatusText.Text = e.Phase == "fetching"
+                ? $"正在获取数据... ({e.Loaded} 条)"
+                : $"已存储 {e.Loaded} 条动态";
+        });
+    }
+
+    private void OnSyncCompleted(object? sender, EventArgs e)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            SyncPanel.Visibility = Visibility.Collapsed;
+            SyncTime.Text = $"最后同步: {DateTime.Now:HH:mm:ss}";
+            RefreshGroupList();
+        });
+    }
+
+    private void OnSyncError(object? sender, string error)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            SyncPanel.Visibility = Visibility.Collapsed;
+            SyncStatusText.Text = $"同步失败: {error}";
+            SyncPanel.Visibility = Visibility.Visible;
+        });
+    }
+
+    private async void OnSyncClick(object sender, RoutedEventArgs e)
+    {
+        BtnSync.IsEnabled = false;
+        SyncPanel.Visibility = Visibility.Visible;
+        try
+        {
+            await _syncService.FullSyncAsync();
+        }
+        finally
+        {
+            BtnSync.IsEnabled = true;
+        }
+    }
+
+    // Resend
     private async void OnResendClick(object sender, RoutedEventArgs e)
     {
         if (sender is not System.Windows.Controls.Button btn) return;
@@ -479,7 +417,7 @@ public partial class MainWindow : Window
             var groupIds = _db.GetGroups().Select(g => g.GroupId).ToList();
             if (groupIds.Count == 0)
             {
-                MessageBox.Show("请先添加星球", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("请先同步星球数据", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -555,16 +493,6 @@ public partial class MainWindow : Window
         _monitorService.Dispose();
         _webView.Dispose();
         base.OnClosed(e);
-    }
-
-    private static long? ParseGroupIdFromUrl(string url)
-    {
-        var match = Regex.Match(url, @"group/(\d+)");
-        if (match.Success && long.TryParse(match.Groups[1].Value, out var id))
-            return id;
-        if (long.TryParse(url.Trim(), out var rawId))
-            return rawId;
-        return null;
     }
 }
 

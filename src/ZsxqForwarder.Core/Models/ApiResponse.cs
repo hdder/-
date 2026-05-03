@@ -31,3 +31,12 @@ public class TopicsRespData
     [JsonProperty("is_end")]
     public bool IsEnd { get; set; }
 }
+
+public class DynamicsRespData
+{
+    [JsonProperty("dynamics")]
+    public List<Dynamic> Dynamics { get; set; } = [];
+
+    [JsonProperty("is_end")]
+    public bool IsEnd { get; set; }
+}

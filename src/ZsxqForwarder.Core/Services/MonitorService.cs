@@ -6,7 +6,7 @@ public class MonitorService : IDisposable
 {
     private readonly TopicService _topicService;
     private readonly ForwardService _forwardService;
-    private readonly Dictionary<long, long> _lastKnownTopicIds = new();
+    private long _lastKnownDynamicId;
     private CancellationTokenSource? _cts;
     private bool _isRunning;
 
@@ -34,20 +34,6 @@ public class MonitorService : IDisposable
         _isRunning = true;
         MonitorStarted?.Invoke(this, EventArgs.Empty);
 
-        // Initialize last known topic IDs
-        foreach (var groupId in groupIds)
-        {
-            try
-            {
-                var topics = await _topicService.GetLatestTopicsAsync(groupId, 1);
-                if (topics.Count > 0)
-                {
-                    _lastKnownTopicIds[groupId] = topics[0].TopicId;
-                }
-            }
-            catch { /* Continue even if initial fetch fails */ }
-        }
-
         _ = RunMonitorLoopAsync(_cts.Token);
     }
 
@@ -66,36 +52,34 @@ public class MonitorService : IDisposable
             {
                 await Task.Delay(IntervalSeconds * 1000, ct);
 
-                foreach (var groupId in MonitoredGroups)
+                var (dynamics, _) = await _topicService.FetchDynamicsPageAsync(count: 10);
+                if (dynamics.Count == 0) continue;
+
+                var maxDynamicId = dynamics.Max(d => d.DynamicId);
+                if (_lastKnownDynamicId == 0)
+                {
+                    _lastKnownDynamicId = maxDynamicId;
+                    continue;
+                }
+
+                var newDynamics = dynamics
+                    .Where(d => d.DynamicId > _lastKnownDynamicId && d.Topic != null)
+                    .ToList();
+
+                _lastKnownDynamicId = maxDynamicId;
+
+                foreach (var d in newDynamics)
                 {
                     if (ct.IsCancellationRequested) break;
 
-                    try
+                    var groupId = d.Group?.GroupId ?? 0;
+                    NewTopicDetected?.Invoke(this, new NewTopicEventArgs
                     {
-                        var topics = await _topicService.GetLatestTopicsAsync(groupId, 5);
-                        if (topics.Count == 0) continue;
+                        Topic = d.Topic!,
+                        GroupId = groupId
+                    });
 
-                        var latestId = topics.Max(t => t.TopicId);
-                        var lastKnownId = _lastKnownTopicIds.GetValueOrDefault(groupId, 0);
-
-                        if (latestId > lastKnownId)
-                        {
-                            var newTopics = topics.Where(t => t.TopicId > lastKnownId).ToList();
-                            _lastKnownTopicIds[groupId] = latestId;
-
-                            foreach (var topic in newTopics)
-                            {
-                                NewTopicDetected?.Invoke(this, new NewTopicEventArgs { Topic = topic, GroupId = groupId });
-
-                                // Auto-forward
-                                await _forwardService.ForwardAsync(topic, groupId);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        ErrorOccurred?.Invoke(this, new MonitorErrorEventArgs { GroupId = groupId, Error = ex.Message });
-                    }
+                    await _forwardService.ForwardAsync(d.Topic!, groupId);
                 }
             }
             catch (OperationCanceledException)

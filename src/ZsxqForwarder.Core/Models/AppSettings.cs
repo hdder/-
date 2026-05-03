@@ -12,6 +12,8 @@ public class GroupConfig
     public long GroupId { get; set; }
     public string Name { get; set; } = "";
     public string Url { get; set; } = "";
+    public string AvatarUrl { get; set; } = "";
+    public string BackgroundUrl { get; set; } = "";
 }
 
 public class ForwardRule
