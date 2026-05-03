@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Net;
-using System.Net.Security;
-using System.Security.Authentication;
+using System.Net.Http;
 using Newtonsoft.Json;
 using ZsxqForwarder.Core.Models;
 
@@ -16,12 +15,10 @@ public class ZsxqApiClient
 
     public ZsxqApiClient()
     {
-        var handler = new HttpClientHandler
+        var handler = new WinHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-            UseCookies = false,
-            SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+            SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
         };
 
         _httpClient = new HttpClient(handler)

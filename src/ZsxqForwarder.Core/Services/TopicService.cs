@@ -1,20 +1,24 @@
-using ZsxqForwarder.Core.Api;
+using Newtonsoft.Json;
 using ZsxqForwarder.Core.Models;
 
 namespace ZsxqForwarder.Core.Services;
 
 public class TopicService
 {
-    private readonly ZsxqApiClient _apiClient;
+    private readonly Func<string, Task<string>> _fetchJson;
 
-    public TopicService(ZsxqApiClient apiClient)
+    public TopicService(Func<string, Task<string>> fetchJson)
     {
-        _apiClient = apiClient;
+        _fetchJson = fetchJson;
     }
 
     public async Task<List<Group>> GetGroupsAsync()
     {
-        return await _apiClient.GetGroupsAsync();
+        var json = await _fetchJson("https://api.zsxq.com/v2/groups");
+        var result = JsonConvert.DeserializeObject<ApiResponse<GroupsRespData>>(json);
+        if (result?.Succeeded == true && result.RespData != null)
+            return result.RespData.Groups;
+        throw new Exception($"Failed to get groups: {result?.Error}");
     }
 
     public async Task<List<Topic>> GetAllTopicsAsync(long groupId, IProgress<(int Loaded, int Total)>? progress = null, CancellationToken cancellationToken = default)
@@ -22,22 +26,24 @@ public class TopicService
         var allTopics = new List<Topic>();
         long? endTime = null;
         var isEnd = false;
-        var loaded = 0;
 
         while (!isEnd && !cancellationToken.IsCancellationRequested)
         {
-            var (topics, ended) = await _apiClient.GetTopicsAsync(groupId, count: 20, endTime: endTime);
-            isEnd = ended;
+            var url = $"https://api.zsxq.com/v2/groups/{groupId}/topics?count=20&scope=all";
+            if (endTime.HasValue)
+                url += $"&end_time={endTime.Value}";
 
-            if (topics.Count == 0)
+            var json = await _fetchJson(url);
+            var result = JsonConvert.DeserializeObject<ApiResponse<TopicsRespData>>(json);
+            if (result?.Succeeded != true || result.RespData == null)
                 break;
 
-            allTopics.AddRange(topics);
-            loaded += topics.Count;
-            progress?.Report((loaded, allTopics.Count));
+            isEnd = result.RespData.IsEnd;
+            if (result.RespData.Topics.Count == 0) break;
 
-            // Use the earliest topic's create_time as endTime for next page
-            endTime = topics.Min(t => t.CreateTime);
+            allTopics.AddRange(result.RespData.Topics);
+            progress?.Report((allTopics.Count, allTopics.Count));
+            endTime = result.RespData.Topics.Min(t => t.CreateTime);
         }
 
         return allTopics;
@@ -45,12 +51,21 @@ public class TopicService
 
     public async Task<List<Topic>> GetLatestTopicsAsync(long groupId, int count = 5)
     {
-        var (topics, _) = await _apiClient.GetTopicsAsync(groupId, count: count);
-        return topics;
+        var url = $"https://api.zsxq.com/v2/groups/{groupId}/topics?count={count}&scope=all";
+        var json = await _fetchJson(url);
+        var result = JsonConvert.DeserializeObject<ApiResponse<TopicsRespData>>(json);
+        if (result?.Succeeded == true && result.RespData != null)
+            return result.RespData.Topics;
+        return [];
     }
 
     public async Task<List<Comment>> GetCommentsAsync(long topicId)
     {
-        return await _apiClient.GetCommentsAsync(topicId);
+        var url = $"https://api.zsxq.com/v2/topics/{topicId}/comments";
+        var json = await _fetchJson(url);
+        var result = JsonConvert.DeserializeObject<CommentResponse>(json);
+        if (result?.Succeeded == true && result.RespData != null)
+            return result.RespData.Comments;
+        throw new Exception($"Failed to get comments");
     }
 }

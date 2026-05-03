@@ -3,7 +3,7 @@ using System.Collections.ObjectModel;
 using System.Text.RegularExpressions;
 using System.Windows;
 using Serilog;
-using ZsxqForwarder.Core.Api;
+using ZsxqForwarder.App.Services;
 using ZsxqForwarder.Core.Models;
 using ZsxqForwarder.Core.Services;
 using ZsxqForwarder.Forwarders;
@@ -12,13 +12,13 @@ namespace ZsxqForwarder.App.Views;
 
 public partial class MainWindow : Window
 {
-    private readonly ZsxqApiClient _apiClient;
     private readonly TopicService _topicService;
     private readonly ExportService _exportService;
     private readonly MonitorService _monitorService;
     private readonly ForwardService _forwardService;
     private readonly AuthService _authService;
     private readonly DatabaseService _db;
+    private readonly BrowserService _browser;
 
     private ObservableCollection<GroupConfig> _groups = [];
     private ObservableCollection<TopicDisplay> _topics = [];
@@ -33,12 +33,13 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _db = db;
-        _apiClient = new ZsxqApiClient();
-        _apiClient.SetAccessToken(accessToken);
-        _topicService = new TopicService(_apiClient);
-        _exportService = new ExportService(_topicService);
         _authService = new AuthService();
         _authService.SaveToken(accessToken);
+
+        // Setup browser service (WebView2 for API calls, avoids SSL issues)
+        _browser = new BrowserService();
+        _topicService = new TopicService(_browser.FetchJsonAsync);
+        _exportService = new ExportService(_topicService);
 
         // Setup forwarders from DB
         _forwardService = new ForwardService();
@@ -55,8 +56,8 @@ public partial class MainWindow : Window
         RefreshGroupList();
         RefreshForwardLogs();
 
-        // Try to enrich group names from API
-        _ = EnrichGroupNamesAsync();
+        // Init browser and enrich group names
+        _ = InitBrowserAndEnrichAsync(accessToken);
     }
 
     private void ApplyForwarderSettings()
@@ -83,6 +84,19 @@ public partial class MainWindow : Window
         var f = new FeishuForwarder { IsEnabled = true };
         f.Configure(rule.WebhookUrl);
         return f;
+    }
+
+    private async Task InitBrowserAndEnrichAsync(string accessToken)
+    {
+        try
+        {
+            await _browser.InitWithTokenAsync(accessToken);
+            await EnrichGroupNamesAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to init browser service");
+        }
     }
 
     private void RefreshGroupList()
@@ -191,10 +205,17 @@ public partial class MainWindow : Window
 
         try
         {
-            var (topics, isEnd) = await _apiClient.GetTopicsAsync(
-                _selectedGroup.GroupId, count: 20, endTime: _lastEndTime);
+            var url = $"https://api.zsxq.com/v2/groups/{_selectedGroup.GroupId}/topics?count=20&scope=all";
+            if (_lastEndTime.HasValue)
+                url += $"&end_time={_lastEndTime.Value}";
 
-            _hasMoreTopics = !isEnd;
+            var json = await _browser.FetchJsonAsync(url);
+            var result = Newtonsoft.Json.JsonConvert.DeserializeObject<ZsxqForwarder.Core.Models.ApiResponse<ZsxqForwarder.Core.Models.TopicsRespData>>(json);
+            if (result?.Succeeded != true || result.RespData == null)
+                throw new Exception(result?.Error ?? "Failed to load topics");
+
+            var topics = result.RespData.Topics;
+            _hasMoreTopics = !result.RespData.IsEnd;
 
             foreach (var topic in topics)
             {
@@ -435,6 +456,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _monitorService.Dispose();
+        _browser.Dispose();
         base.OnClosed(e);
     }
 
