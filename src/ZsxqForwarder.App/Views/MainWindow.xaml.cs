@@ -2,8 +2,8 @@ using System.IO;
 using System.Collections.ObjectModel;
 using System.Text.RegularExpressions;
 using System.Windows;
+using Newtonsoft.Json;
 using Serilog;
-using ZsxqForwarder.App.Services;
 using ZsxqForwarder.Core.Models;
 using ZsxqForwarder.Core.Services;
 using ZsxqForwarder.Forwarders;
@@ -18,7 +18,7 @@ public partial class MainWindow : Window
     private readonly ForwardService _forwardService;
     private readonly AuthService _authService;
     private readonly DatabaseService _db;
-    private readonly BrowserService _browser;
+    private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
     private ObservableCollection<GroupConfig> _groups = [];
     private ObservableCollection<TopicDisplay> _topics = [];
@@ -28,17 +28,17 @@ public partial class MainWindow : Window
     private long? _lastEndTime;
     private bool _hasMoreTopics = true;
 
-    public MainWindow(string accessToken, DatabaseService db)
+    public MainWindow(string accessToken, DatabaseService db, Microsoft.Web.WebView2.Wpf.WebView2 webView)
     {
         InitializeComponent();
 
         _db = db;
+        _webView = webView;
         _authService = new AuthService();
         _authService.SaveToken(accessToken);
 
-        // Setup browser service (WebView2 for API calls, avoids SSL issues)
-        _browser = new BrowserService();
-        _topicService = new TopicService(_browser.FetchJsonAsync);
+        // TopicService uses WebView2's ExecuteScriptAsync for API calls
+        _topicService = new TopicService(FetchJsonAsync);
         _exportService = new ExportService(_topicService);
 
         // Setup forwarders from DB
@@ -56,8 +56,43 @@ public partial class MainWindow : Window
         RefreshGroupList();
         RefreshForwardLogs();
 
-        // Init browser when window is loaded
-        Loaded += async (s, e) => await InitBrowserAndEnrichAsync(accessToken);
+        // Enrich group names from API (WebView2 already ready)
+        _ = EnrichGroupNamesAsync();
+    }
+
+    /// <summary>
+    /// Fetch JSON via WebView2 JavaScript fetch() — reuses login session cookies
+    /// </summary>
+    private async Task<string> FetchJsonAsync(string url)
+    {
+        if (_webView.CoreWebView2 == null)
+            throw new InvalidOperationException("WebView2 not initialized");
+
+        var escapedUrl = url.Replace("'", "\\'");
+        var js = $@"
+            (async () => {{
+                try {{
+                    const resp = await fetch('{escapedUrl}', {{
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'application/json' }}
+                    }});
+                    return await resp.text();
+                }} catch(e) {{
+                    return JSON.stringify({{ error: e.message }});
+                }}
+            }})()";
+
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
+
+        if (string.IsNullOrEmpty(result))
+            throw new Exception("Empty response from WebView2");
+
+        if (result.StartsWith("\""))
+        {
+            return JsonConvert.DeserializeObject<string>(result) ?? result;
+        }
+
+        return result;
     }
 
     private void ApplyForwarderSettings()
@@ -84,19 +119,6 @@ public partial class MainWindow : Window
         var f = new FeishuForwarder { IsEnabled = true };
         f.Configure(rule.WebhookUrl);
         return f;
-    }
-
-    private async Task InitBrowserAndEnrichAsync(string accessToken)
-    {
-        try
-        {
-            await _browser.InitWithTokenAsync(accessToken);
-            await EnrichGroupNamesAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to init browser service");
-        }
     }
 
     private void RefreshGroupList()
@@ -209,7 +231,7 @@ public partial class MainWindow : Window
             if (_lastEndTime.HasValue)
                 url += $"&end_time={_lastEndTime.Value}";
 
-            var json = await _browser.FetchJsonAsync(url);
+            var json = await FetchJsonAsync(url);
             var result = Newtonsoft.Json.JsonConvert.DeserializeObject<ZsxqForwarder.Core.Models.ApiResponse<ZsxqForwarder.Core.Models.TopicsRespData>>(json);
             if (result?.Succeeded != true || result.RespData == null)
                 throw new Exception(result?.Error ?? "Failed to load topics");
@@ -456,7 +478,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _monitorService.Dispose();
-        _browser.Dispose();
+        _webView.Dispose();
         base.OnClosed(e);
     }
 

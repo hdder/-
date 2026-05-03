@@ -8,6 +8,7 @@ public partial class LoginWindow : Window
 {
     public bool LoginSucceeded { get; private set; }
     public string? AccessToken { get; private set; }
+    public Microsoft.Web.WebView2.Wpf.WebView2 WebView => LoginWebView;
 
     public LoginWindow()
     {
@@ -20,8 +21,6 @@ public partial class LoginWindow : Window
         if (e.IsSuccess)
         {
             LoadingOverlay.Visibility = Visibility.Collapsed;
-
-            // Check cookies after page loads
             await CheckLoginStatusAsync();
         }
     }
@@ -30,48 +29,9 @@ public partial class LoginWindow : Window
     {
         try
         {
-            var cookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://api.zsxq.com");
-            var tokenCookie = cookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
-
-            if (tokenCookie != null && !string.IsNullOrEmpty(tokenCookie.Value))
-            {
-                AccessToken = tokenCookie.Value;
-                LoginSucceeded = true;
-
-                Dispatcher.Invoke(() =>
-                {
-                    StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Colors.Green);
-                    StatusText.Text = "登录成功！";
-                });
-
-                await Task.Delay(800);
-                Dispatcher.Invoke(Close);
+            if (await TryGetTokenAsync())
                 return;
-            }
 
-            // Also check wx.zsxq.com cookies
-            var wxCookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://wx.zsxq.com");
-            tokenCookie = wxCookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
-
-            if (tokenCookie != null && !string.IsNullOrEmpty(tokenCookie.Value))
-            {
-                AccessToken = tokenCookie.Value;
-                LoginSucceeded = true;
-
-                Dispatcher.Invoke(() =>
-                {
-                    StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
-                        System.Windows.Media.Colors.Green);
-                    StatusText.Text = "登录成功！";
-                });
-
-                await Task.Delay(800);
-                Dispatcher.Invoke(Close);
-                return;
-            }
-
-            // Not logged in yet, set up monitoring
             Dispatcher.Invoke(() =>
             {
                 StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
@@ -79,7 +39,6 @@ public partial class LoginWindow : Window
                 StatusText.Text = "请使用微信扫码登录...";
             });
 
-            // Poll for login status
             _ = PollLoginStatusAsync();
         }
         catch (Exception ex)
@@ -92,54 +51,45 @@ public partial class LoginWindow : Window
         }
     }
 
+    private async Task<bool> TryGetTokenAsync()
+    {
+        var cookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://api.zsxq.com");
+        var tokenCookie = cookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
+
+        if (tokenCookie == null || string.IsNullOrEmpty(tokenCookie.Value))
+        {
+            var wxCookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://wx.zsxq.com");
+            tokenCookie = wxCookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
+        }
+
+        if (tokenCookie != null && !string.IsNullOrEmpty(tokenCookie.Value))
+        {
+            AccessToken = tokenCookie.Value;
+            LoginSucceeded = true;
+
+            Dispatcher.Invoke(() =>
+            {
+                StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Colors.Green);
+                StatusText.Text = "登录成功！";
+            });
+
+            await Task.Delay(800);
+            Dispatcher.Invoke(Close);
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task PollLoginStatusAsync()
     {
         while (!LoginSucceeded)
         {
             await Task.Delay(2000);
-
             try
             {
-                var cookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://api.zsxq.com");
-                var tokenCookie = cookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
-
-                if (tokenCookie != null && !string.IsNullOrEmpty(tokenCookie.Value))
-                {
-                    AccessToken = tokenCookie.Value;
-                    LoginSucceeded = true;
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
-                            System.Windows.Media.Colors.Green);
-                        StatusText.Text = "登录成功！正在进入...";
-                    });
-
-                    await Task.Delay(800);
-                    Dispatcher.Invoke(Close);
-                    return;
-                }
-
-                // Also check wx cookies
-                var wxCookies = await LoginWebView.CoreWebView2.CookieManager.GetCookiesAsync("https://wx.zsxq.com");
-                tokenCookie = wxCookies.FirstOrDefault(c => c.Name == "zsxq_access_token");
-
-                if (tokenCookie != null && !string.IsNullOrEmpty(tokenCookie.Value))
-                {
-                    AccessToken = tokenCookie.Value;
-                    LoginSucceeded = true;
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        StatusDot.Fill = new System.Windows.Media.SolidColorBrush(
-                            System.Windows.Media.Colors.Green);
-                        StatusText.Text = "登录成功！正在进入...";
-                    });
-
-                    await Task.Delay(800);
-                    Dispatcher.Invoke(Close);
-                    return;
-                }
+                await TryGetTokenAsync();
             }
             catch (Exception ex)
             {
@@ -148,9 +98,9 @@ public partial class LoginWindow : Window
         }
     }
 
+    // Do NOT dispose WebView2 here — it's reused by MainWindow
     protected override void OnClosed(EventArgs e)
     {
-        LoginWebView.Dispose();
         base.OnClosed(e);
     }
 }

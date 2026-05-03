@@ -66,7 +66,8 @@ public partial class App : Application
 
             if (loginWindow.LoginSucceeded)
             {
-                var mainWindow = new MainWindow(loginWindow.AccessToken!, db);
+                var webView = loginWindow.WebView;
+                var mainWindow = new MainWindow(loginWindow.AccessToken!, db, webView);
                 mainWindow.Closed += (s, args) =>
                 {
                     Log.Information("MainWindow closed, shutting down");
