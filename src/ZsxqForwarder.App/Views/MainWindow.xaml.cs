@@ -60,13 +60,25 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Hybrid fetch: JS fetch in WebView2 context (wx.zsxq.com).
-    /// The page's service worker adds x-signature headers automatically.
+    /// For dynamics API, hooks page fetch to capture signature headers.
     /// </summary>
     private async Task<string> FetchJsonAsync(string url)
     {
         if (_webView.CoreWebView2 == null)
             throw new InvalidOperationException("WebView2 not initialized");
 
+        // For dynamics API, use intercepted headers from the page's own API calls
+        if (url.Contains("/v2/dynamics"))
+            return await FetchDynamicsAsync(url);
+
+        return await FetchSimpleAsync(url);
+    }
+
+    /// <summary>
+    /// Simple JS fetch for APIs that work without signature headers.
+    /// </summary>
+    private async Task<string> FetchSimpleAsync(string url)
+    {
         var escapedUrl = url.Replace("'", "\\'");
         var js = $@"
             (async () => {{
@@ -83,22 +95,191 @@ public partial class MainWindow : Window
             }})()";
 
         var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
-        if (!string.IsNullOrEmpty(result))
+        if (string.IsNullOrEmpty(result))
+            throw new Exception("Empty response from WebView2");
+
+        var text = result.StartsWith("\"")
+            ? JsonConvert.DeserializeObject<string>(result) ?? result
+            : result;
+
+        if (text.Contains("\"error\"") && !text.Contains("\"succeeded\""))
         {
-            var text = result.StartsWith("\"")
-                ? JsonConvert.DeserializeObject<string>(result) ?? result
-                : result;
-
-            if (text.Contains("\"error\"") && !text.Contains("\"succeeded\""))
-            {
-                Log.Warning("JS fetch failed: {Text}", text);
-                throw new Exception("Fetch error: " + text);
-            }
-
-            return text;
+            Log.Warning("JS fetch failed for {Url}: {Text}", url, text);
+            throw new Exception("Fetch error: " + text);
         }
 
-        throw new Exception("Empty response from WebView2");
+        return text;
+    }
+
+    /// <summary>
+    /// Fetch dynamics API by hooking into the page's own fetch to capture signature headers.
+    /// Strategy:
+    /// 1. Install fetch hook to capture headers from the page's own api.zsxq.com calls
+    /// 2. Navigate to wx.zsxq.com to trigger the page's dynamics load
+    /// 3. Use captured headers (with updated timestamp) for our own requests
+    /// 4. Fall back to __NEXT_DATA__ DOM extraction if hook fails
+    /// </summary>
+    private async Task<string> FetchDynamicsAsync(string url)
+    {
+        // Step 1: Ensure fetch hook is installed to capture signature headers
+        await InstallFetchHookAsync();
+
+        // Step 2: If we already have captured headers, use them directly
+        var hasHeaders = await EvaluateBoolAsync("window.__zsxqHeaders != null");
+        if (hasHeaders)
+        {
+            var text = await FetchWithCapturedHeadersAsync(url);
+            if (text != null) return text;
+        }
+
+        // Step 3: Navigate to wx.zsxq.com to trigger the page's own API call
+        Log.Information("Navigating to wx.zsxq.com to capture API headers");
+        await NavigateAndWaitAsync("https://wx.zsxq.com/");
+
+        // Step 4: Check if hook captured headers
+        hasHeaders = await EvaluateBoolAsync("window.__zsxqHeaders != null");
+        if (hasHeaders)
+        {
+            var text = await FetchWithCapturedHeadersAsync(url);
+            if (text != null) return text;
+        }
+
+        // Step 5: Fallback - extract from __NEXT_DATA__
+        Log.Information("Falling back to __NEXT_DATA__ extraction");
+        var data = await ExtractNextDataAsync();
+        if (data != null) return data;
+
+        throw new Exception("无法获取 dynamics 数据：签名头捕获失败且 __NEXT_DATA__ 无数据");
+    }
+
+    private async Task InstallFetchHookAsync()
+    {
+        await _webView.CoreWebView2.ExecuteScriptAsync(@"
+            if (!window.__zsxqHookInstalled) {
+                window.__zsxqHookInstalled = true;
+                window.__zsxqHeaders = null;
+
+                const origFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+                    const opts = args[1] || {};
+                    const headers = opts.headers || {};
+
+                    // Capture headers from any api.zsxq.com request
+                    if (url && url.includes('api.zsxq.com')) {
+                        try {
+                            const h = headers instanceof Headers
+                                ? Object.fromEntries(headers.entries())
+                                : (typeof headers === 'object' ? {...headers} : {});
+                            if (Object.keys(h).length > 1) {
+                                window.__zsxqHeaders = h;
+                            }
+                        } catch(e) {}
+                    }
+
+                    return origFetch.apply(this, args);
+                };
+            }
+        ");
+    }
+
+    private async Task<string?> FetchWithCapturedHeadersAsync(string url)
+    {
+        var escapedUrl = url.Replace("'", "\\'").Replace("\"", "\\\"");
+        var js = $@"
+            (async () => {{
+                try {{
+                    const h = window.__zsxqHeaders || {{}};
+                    // Update timestamp for current request
+                    const ts = Math.floor(Date.now() / 1000).toString();
+                    const headers = {{...h, 'Accept': 'application/json'}};
+                    if (h['x-timestamp']) headers['x-timestamp'] = ts;
+
+                    const resp = await fetch('{escapedUrl}', {{
+                        credentials: 'include',
+                        headers: headers
+                    }});
+                    if (!resp.ok) return JSON.stringify({{ error: 'HTTP ' + resp.status }});
+                    const text = await resp.text();
+                    if (text.includes('""succeeded""')) return text;
+                    return JSON.stringify({{ error: 'API error', detail: text.substring(0, 200) }});
+                }} catch(e) {{
+                    return JSON.stringify({{ error: e.message }});
+                }}
+            }})()";
+
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
+        if (string.IsNullOrEmpty(result)) return null;
+
+        var text = result.StartsWith("\"")
+            ? JsonConvert.DeserializeObject<string>(result) ?? result
+            : result;
+
+        if (text.Contains("\"succeeded\"")) return text;
+
+        Log.Warning("FetchWithCapturedHeaders failed: {Text}", text);
+        return null;
+    }
+
+    private async Task<string?> ExtractNextDataAsync()
+    {
+        var js = @"
+            (() => {
+                try {
+                    // Try __NEXT_DATA__ script tag
+                    const el = document.getElementById('__NEXT_DATA__');
+                    if (el && el.textContent) {
+                        const data = JSON.parse(el.textContent);
+                        // Look for dynamics in page props
+                        const props = data?.props?.pageProps;
+                        if (props) return JSON.stringify({ succeeded: true, resp_data: { dynamics: props.dynamics || props.feedList || [], is_end: true } });
+                    }
+
+                    // Try window.__NEXT_DATA__
+                    const wnd = window.__NEXT_DATA__;
+                    if (wnd?.props?.pageProps) {
+                        const props = wnd.props.pageProps;
+                        const dynamics = props.dynamics || props.feedList || props.list || [];
+                        if (dynamics.length > 0) {
+                            return JSON.stringify({ succeeded: true, resp_data: { dynamics: dynamics, is_end: true } });
+                        }
+                    }
+                } catch(e) {}
+                return null;
+            })()";
+
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(js);
+        if (string.IsNullOrEmpty(result) || result == "null") return null;
+
+        var text = result.StartsWith("\"")
+            ? JsonConvert.DeserializeObject<string>(result) ?? result
+            : result;
+
+        if (text.Contains("\"succeeded\"")) return text;
+        return null;
+    }
+
+    private async Task NavigateAndWaitAsync(string url)
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        void handler(object? s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+        {
+            tcs.TrySetResult(e.IsSuccess);
+        }
+        _webView.CoreWebView2.NavigationCompleted += handler;
+        _webView.CoreWebView2.Navigate(url);
+
+        var success = await tcs.Task;
+        _webView.CoreWebView2.NavigationCompleted -= handler;
+
+        if (success)
+            await Task.Delay(2000); // Wait for JS to execute and API calls to complete
+    }
+
+    private async Task<bool> EvaluateBoolAsync(string expression)
+    {
+        var result = await _webView.CoreWebView2.ExecuteScriptAsync(expression);
+        return result?.Trim().ToLower() == "true";
     }
 
     private void ApplyForwarderSettings()

@@ -79,7 +79,7 @@ public class TopicService
         var result = JsonConvert.DeserializeObject<ApiResponse<DynamicsRespData>>(json);
         if (result?.Succeeded == true && result.RespData != null)
             return (result.RespData.Dynamics, result.RespData.IsEnd);
-        throw new Exception($"Failed to fetch dynamics: {result?.Error}");
+        throw new Exception($"Failed to fetch dynamics: code={result?.Code}, error={result?.Error}, raw={json?.Substring(0, Math.Min(200, json?.Length ?? 0))}");
     }
 
     public async Task<List<Dynamic>> FetchAllDynamicsAsync(
