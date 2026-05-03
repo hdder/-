@@ -203,18 +203,19 @@ public class DatabaseService
 
         foreach (var d in dynamics)
         {
-            // Upsert group
-            if (d.Group != null)
+            // Upsert group - use name-based ID if group_id is 0 (from DOM extraction)
+            if (d.Group != null && !string.IsNullOrEmpty(d.Group.Name))
             {
+                var groupId = d.Group.GroupId > 0 ? d.Group.GroupId : GetGroupIdByName(conn, d.Group.Name, tx);
                 conn.Execute(
                     "INSERT OR REPLACE INTO Groups (GroupId, Name, Url, AvatarUrl, BackgroundUrl) VALUES (@GroupId, @Name, @Url, @AvatarUrl, @BackgroundUrl)",
                     new
                     {
-                        GroupId = d.Group.GroupId,
+                        GroupId = groupId,
                         Name = d.Group.Name,
-                        Url = $"https://wx.zsxq.com/group/{d.Group.GroupId}",
-                        AvatarUrl = d.Group.AvatarUrl,
-                        BackgroundUrl = d.Group.BackgroundUrl
+                        Url = $"https://wx.zsxq.com/group/{groupId}",
+                        AvatarUrl = d.Group.AvatarUrl ?? "",
+                        BackgroundUrl = d.Group.BackgroundUrl ?? ""
                     },
                     tx);
             }
@@ -224,9 +225,16 @@ public class DatabaseService
             {
                 var topic = d.Topic;
                 var groupId = d.Group?.GroupId ?? topic.Group?.GroupId ?? 0;
+                if (groupId == 0 && d.Group?.Name != null)
+                    groupId = GetGroupIdByName(conn, d.Group.Name, tx);
                 var author = topic.Talk?.Owner?.Name ?? topic.Task?.Owner?.Name ?? topic.Question?.Owner?.Name ?? "Unknown";
                 var content = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
                 var createTime = topic.CreateTime > 0 ? topic.CreateTime : d.CreateTimeMs;
+
+                // Generate topic_id from content hash if missing (DOM extraction has no IDs)
+                var topicId = topic.TopicId;
+                if (topicId == 0 && !string.IsNullOrEmpty(content))
+                    topicId = ContentHash(content);
 
                 // Use TopicId as dedup key: INSERT OR IGNORE
                 conn.Execute(
@@ -234,7 +242,7 @@ public class DatabaseService
                       VALUES (@TopicId, @GroupId, @Type, @Author, @Content, @CreateTime, @RawJson)",
                     new
                     {
-                        TopicId = topic.TopicId,
+                        TopicId = topicId,
                         GroupId = groupId,
                         Type = topic.Type,
                         Author = author,
@@ -257,6 +265,22 @@ public class DatabaseService
         }
 
         tx.Commit();
+    }
+
+    private static long GetGroupIdByName(SqliteConnection conn, string name, SqliteTransaction tx)
+    {
+        var existing = conn.QueryFirstOrDefault<long?>(
+            "SELECT GroupId FROM Groups WHERE Name = @Name", new { Name = name }, tx);
+        if (existing.HasValue && existing.Value > 0) return existing.Value;
+
+        // Generate a stable negative ID from name hash (to distinguish from real API IDs)
+        return -((long)name.GetHashCode(StringComparison.Ordinal) & 0x7FFFFFFF);
+    }
+
+    private static long ContentHash(string content)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content));
+        return BitConverter.ToInt64(hash, 0) & 0x7FFFFFFFFFFFFFFF; // Ensure positive
     }
 
     public long GetLastSyncedDynamicId()

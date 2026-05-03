@@ -113,31 +113,32 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Extract dynamics data from the wx.zsxq.com page DOM.
-    /// Strategy: Navigate to wx.zsxq.com, wait for render, then extract posts from the DOM.
+    /// The page is an Angular app. Two page types:
+    /// - /dynamics: has div.dynamic-topic with .from-group > .group-name
+    /// - /group/{id}: has app-topic with .topic-container
     /// </summary>
     private async Task<string> FetchDynamicsAsync(string url)
     {
         Log.Information("Fetching dynamics from DOM");
 
-        // Navigate to wx.zsxq.com home page (timeline)
+        // Navigate to dynamics page
         var currentUrl = await _webView.CoreWebView2.ExecuteScriptAsync("location.href");
-        var needsNavigation = currentUrl == null || !currentUrl.Contains("wx.zsxq.com");
+        var onDynamics = currentUrl != null && currentUrl.Contains("wx.zsxq.com/dynamics");
 
-        if (needsNavigation)
+        if (!onDynamics)
         {
-            await NavigateAndWaitAsync("https://wx.zsxq.com/", 4000);
+            await NavigateAndWaitAsync("https://wx.zsxq.com/dynamics", 4000);
         }
         else
         {
-            // Already on the page, reload to get fresh data
             await ReloadAndWaitAsync();
         }
 
-        // Extract dynamics data from the rendered DOM
+        // Extract from DOM
         var extracted = await ExtractDynamicsFromDomAsync();
         if (extracted != null)
         {
-            Log.Information("Extracted {Len} chars of dynamics data from DOM", extracted.Length);
+            Log.Information("Extracted dynamics from DOM ({Len} chars)", extracted.Length);
             return extracted;
         }
 
@@ -178,139 +179,115 @@ public partial class MainWindow : Window
             await Task.Delay(3000);
     }
 
-    /// <summary>
-    /// Extract dynamics data from the page's DOM or internal state.
-    /// Tries multiple extraction strategies:
-    /// 1. __NEXT_DATA__ (Next.js SSR data)
-    /// 2. React fiber tree (internal React state)
-    /// 3. Direct DOM scraping of post elements
-    /// </summary>
     private async Task<string?> ExtractDynamicsFromDomAsync()
     {
         var js = @"
             (() => {
-                try {
-                    // Strategy 1: __NEXT_DATA__
-                    const nd = window.__NEXT_DATA__;
-                    if (nd) {
-                        // Search recursively for dynamics-like arrays
-                        const found = findDynamics(nd);
-                        if (found && found.length > 0) {
-                            return wrapResult(found);
-                        }
-                    }
+                const dynamics = [];
 
-                    // Strategy 2: __NEXT_DATA__ script tag
-                    const ndEl = document.getElementById('__NEXT_DATA__');
-                    if (ndEl && ndEl.textContent) {
-                        const parsed = JSON.parse(ndEl.textContent);
-                        const found = findDynamics(parsed);
-                        if (found && found.length > 0) {
-                            return wrapResult(found);
-                        }
-                    }
-
-                    // Strategy 3: Search all global variables for dynamics
-                    for (const key of Object.keys(window)) {
-                        try {
-                            const val = window[key];
-                            if (val && typeof val === 'object' && !Array.isArray(val)) {
-                                const found = findDynamics(val);
-                                if (found && found.length > 0) {
-                                    return wrapResult(found);
-                                }
-                            }
-                        } catch(e) {}
-                    }
-
-                    // Strategy 4: Scrape DOM directly
-                    return scrapeDom();
-                } catch(e) {
-                    return JSON.stringify({error: e.message});
+                // Strategy 1: /dynamics page - div.dynamic-topic
+                const dynamicTopics = document.querySelectorAll('.dynamic-topic');
+                for (const dt of dynamicTopics) {
+                    const item = extractDynamicTopic(dt);
+                    if (item) dynamics.push(item);
                 }
 
-                function findDynamics(obj, depth) {
-                    depth = depth || 0;
-                    if (depth > 5 || !obj || typeof obj !== 'object') return null;
-
-                    // Look for arrays that contain objects with dynamic_id or topic_id
-                    if (Array.isArray(obj)) {
-                        if (obj.length > 0 && obj[0]) {
-                            if (obj[0].dynamic_id || obj[0].topic_id) return obj;
-                            // Check nested .topic property
-                            if (obj[0].topic && obj[0].topic.topic_id) return obj;
-                        }
-                        return null;
+                // Strategy 2: /group/{id} page - .topic-container
+                if (dynamics.length === 0) {
+                    const topicContainers = document.querySelectorAll('.topic-container');
+                    for (const tc of topicContainers) {
+                        const item = extractTopicContainer(tc);
+                        if (item) dynamics.push(item);
                     }
-
-                    // Recurse into object values
-                    for (const key of Object.keys(obj)) {
-                        try {
-                            const result = findDynamics(obj[key], depth + 1);
-                            if (result && result.length > 0) return result;
-                        } catch(e) {}
-                    }
-                    return null;
                 }
 
-                function scrapeDom() {
-                    // Try to find post elements and extract data
-                    const items = [];
-                    // Common selectors for zsxq post containers
-                    const selectors = [
-                        '[class*=""feed-item""]',
-                        '[class*=""topic-item""]',
-                        '[class*=""post""]',
-                        '[class*=""card""]',
-                        'article',
-                        '[class*=""dynamics""]',
-                        '[class*=""stream""]'
-                    ];
+                if (dynamics.length === 0) return null;
 
-                    for (const sel of selectors) {
-                        const els = document.querySelectorAll(sel);
-                        if (els.length > 0) {
-                            // Found post elements, try to extract data from their React props
-                            for (const el of els) {
-                                const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-                                if (fiberKey) {
-                                    let fiber = el[fiberKey];
-                                    // Walk up the fiber tree to find props with topic data
-                                    for (let i = 0; i < 10 && fiber; i++) {
-                                        const props = fiber.memoizedProps || fiber.pendingProps;
-                                        if (props) {
-                                            const topic = props.topic || props.data || props.item;
-                                            if (topic && (topic.topic_id || topic.dynamic_id)) {
-                                                items.push(topic);
-                                                break;
-                                            }
-                                        }
-                                        fiber = fiber.return;
-                                    }
-                                }
-                            }
-                            if (items.length > 0) break;
-                        }
+                // Also extract groups from sidebar
+                const groups = [];
+                const groupNames = document.querySelectorAll('.from-group .group-name, .group-item');
+                const seenGroups = new Set();
+                for (const gn of groupNames) {
+                    const name = gn.textContent?.trim();
+                    const avatar = gn.previousElementSibling?.src || gn.src || '';
+                    if (name && !seenGroups.has(name)) {
+                        seenGroups.add(name);
+                        groups.push({group_id: 0, name: name, avatar_url: avatar, background_url: ''});
                     }
-                    return items.length > 0 ? wrapResult(items) : null;
                 }
 
-                function wrapResult(dynamics) {
-                    // Ensure each item has the expected structure
-                    const items = dynamics.map(d => {
-                        if (d.topic_id) {
-                            // Already a topic-like object, wrap in dynamic structure
-                            return {
-                                dynamic_id: d.dynamic_id || d.topic_id,
-                                action: 'create_topic',
-                                create_time: d.create_time || new Date().toISOString(),
-                                topic: d,
-                                group: d.group || null
-                            };
+                return JSON.stringify({
+                    succeeded: true,
+                    resp_data: {
+                        dynamics: dynamics,
+                        groups: groups,
+                        is_end: true
+                    }
+                });
+
+                function extractDynamicTopic(el) {
+                    const avatar = el.querySelector('.author .avatar')?.src || '';
+                    const authorName = el.querySelector('.author .role')?.textContent?.trim() || '';
+                    const dateText = el.querySelector('.author .date')?.textContent?.trim() || '';
+                    const content = el.querySelector('.talk-content-container .content')?.innerText?.trim() || '';
+                    const groupName = el.querySelector('.from-group .group-name')?.textContent?.trim() || '';
+                    const groupAvatar = el.querySelector('.from-group .group-avatar')?.src || '';
+                    const likes = parseInt(el.querySelector('.like-count')?.textContent?.trim() || '0');
+                    const comments = parseInt(el.querySelector('.comment-count')?.textContent?.trim() || '0');
+
+                    if (!content && !authorName) return null;
+
+                    return {
+                        dynamic_id: 0,
+                        action: 'create_topic',
+                        create_time: dateText,
+                        topic: {
+                            topic_id: 0,
+                            type: 'talk',
+                            group: {group_id: 0, name: groupName},
+                            talk: {
+                                owner: {name: authorName, avatar_url: avatar},
+                                text: content
+                            },
+                            likes_count: likes,
+                            comments_count: comments
+                        },
+                        group: {
+                            group_id: 0,
+                            name: groupName,
+                            avatar_url: groupAvatar,
+                            background_url: ''
                         }
-                        return d;
-                    });
-                    return JSON.stringify({succeeded: true, resp_data: {dynamics: items, is_end: true}});
+                    };
+                }
+
+                function extractTopicContainer(el) {
+                    const avatar = el.querySelector('.header-container .avatar')?.src || '';
+                    const authorName = el.querySelector('.header-container .role')?.textContent?.trim() || '';
+                    const dateText = el.querySelector('.header-container .date')?.textContent?.trim() || '';
+                    const content = el.querySelector('.talk-content-container .content')?.innerText?.trim() || '';
+                    const likesText = el.querySelector('.like')?.nextElementSibling?.textContent?.trim() || '0';
+                    const commentsText = el.querySelector('.comment')?.nextElementSibling?.textContent?.trim() || '0';
+
+                    if (!content && !authorName) return null;
+
+                    return {
+                        dynamic_id: 0,
+                        action: 'create_topic',
+                        create_time: dateText,
+                        topic: {
+                            topic_id: 0,
+                            type: 'talk',
+                            group: null,
+                            talk: {
+                                owner: {name: authorName, avatar_url: avatar},
+                                text: content
+                            },
+                            likes_count: parseInt(likesText) || 0,
+                            comments_count: parseInt(commentsText) || 0
+                        },
+                        group: null
+                    };
                 }
             })()";
 
@@ -323,16 +300,7 @@ public partial class MainWindow : Window
             : result;
 
         if (text.Contains("\"succeeded\"")) return text;
-        if (text.Contains("\"error\""))
-            Log.Warning("DOM extraction error: {Text}", text);
-
         return null;
-    }
-
-    private async Task<bool> EvaluateBoolAsync(string expression)
-    {
-        var result = await _webView.CoreWebView2.ExecuteScriptAsync(expression);
-        return result?.Trim().ToLower() == "true";
     }
 
     private void ApplyForwarderSettings()
