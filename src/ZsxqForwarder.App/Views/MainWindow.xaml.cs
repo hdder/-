@@ -134,6 +134,18 @@ public partial class MainWindow : Window
             await ReloadAndWaitAsync();
         }
 
+        // Debug: log page structure before extraction
+        var debugInfo = await _webView.CoreWebView2.ExecuteScriptAsync(@"
+            (function() {
+                const appTopics = document.querySelectorAll('app-topic').length;
+                const flowTopics = document.querySelectorAll('app-topic[type=""flow""]').length;
+                const dynamicTopics = document.querySelectorAll('.dynamic-topic').length;
+                const topicContainers = document.querySelectorAll('.topic-container').length;
+                const headers = document.querySelectorAll('app-topic-header').length;
+                return JSON.stringify({appTopics, flowTopics, dynamicTopics, topicContainers, headers, url: location.href});
+            })()");
+        Log.Information("DOM debug: {Debug}", debugInfo);
+
         // Extract from DOM
         var extracted = await ExtractDynamicsFromDomAsync();
         if (extracted != null)
