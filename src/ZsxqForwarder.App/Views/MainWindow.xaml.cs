@@ -276,12 +276,28 @@ public partial class MainWindow : Window
         var js = $@"
             (() => {{
                 const dynamics = [];
+                let topicIndex = 0;
+
+                // Convert date string to unix milliseconds
+                function dateToMs(dateStr) {{
+                    const trimmed = (dateStr || '').trim();
+                    const m = trimmed.match(/(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{2}}):(\d{{2}})/);
+                    if (!m) return 0;
+                    const d = new Date(parseInt(m[1]), parseInt(m[2])-1, parseInt(m[3]), parseInt(m[4]), parseInt(m[5]));
+                    return d.getTime();
+                }}
+
+                // Generate unique topic_id using groupId + timestamp + index
+                function makeTopicId(groupId, dateText, idx) {{
+                    const ms = dateToMs(dateText);
+                    return groupId + ms + idx;
+                }}
 
                 // Extract from <app-topic type=""flow""> elements
                 const appTopics = document.querySelectorAll('app-topic[type=""flow""]');
                 for (const at of appTopics) {{
                     const item = extractAppTopic(at);
-                    if (item) dynamics.push(item);
+                    if (item) {{ dynamics.push(item); topicIndex++; }}
                 }}
 
                 // Fallback - extract from .topic-container (legacy)
@@ -345,8 +361,9 @@ public partial class MainWindow : Window
                         action: 'create_topic',
                         create_time: dateText,
                         topic: {{
-                            topic_id: 0,
+                            topic_id: makeTopicId({groupId}, dateText, topicIndex),
                             type: 'talk',
+                            create_time: dateToMs(dateText),
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
                             talk: {{
                                 owner: {{name: authorName, avatar_url: avatar}},
@@ -380,8 +397,9 @@ public partial class MainWindow : Window
                         action: 'create_topic',
                         create_time: dateText,
                         topic: {{
-                            topic_id: 0,
+                            topic_id: makeTopicId({groupId}, dateText, dynamics.length),
                             type: 'talk',
+                            create_time: dateToMs(dateText),
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
                             talk: {{
                                 owner: {{name: authorName, avatar_url: avatar}},
