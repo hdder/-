@@ -86,14 +86,18 @@ public class MonitorService : IDisposable
 
                 List<Dynamic> dynamics;
 
-                // Try API first
-                if (_apiService != null && _apiService.HasCookies)
+                // Try API first (respects circuit breaker)
+                if (_apiService != null && _apiService.HasCookies && !_apiService.IsCircuitOpen)
                 {
                     dynamics = await FetchGroupViaApiAsync(groupId, groupName);
                 }
+                else if (_apiService?.IsCircuitOpen == true)
+                {
+                    Log.Debug("Circuit breaker open for group {GroupId}, using DOM fallback", groupId);
+                    dynamics = await _scrapeGroupPage(groupId, groupName);
+                }
                 else
                 {
-                    // Fallback to DOM scraping
                     dynamics = await _scrapeGroupPage(groupId, groupName);
                 }
 

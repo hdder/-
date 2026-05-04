@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using Serilog;
 using ZsxqForwarder.Core.Models;
 
 namespace ZsxqForwarder.Core.Services;
@@ -24,8 +25,9 @@ public class SettingsService
                 _settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
             _settings = new AppSettings();
         }
         return _settings;
@@ -39,9 +41,9 @@ public class SettingsService
             var json = JsonConvert.SerializeObject(_settings, Formatting.Indented);
             File.WriteAllText(SettingsPath, json);
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently fail - settings won't persist but app still works
+            Log.Error(ex, "Failed to save settings to {Path}", SettingsPath);
         }
     }
 }

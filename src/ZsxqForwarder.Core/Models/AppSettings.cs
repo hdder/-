@@ -5,6 +5,8 @@ public class AppSettings
     public List<GroupConfig> Groups { get; set; } = [];
     public List<ForwardRule> ForwardRules { get; set; } = [];
     public MonitorConfig Monitor { get; set; } = new();
+    public ApiConfig Api { get; set; } = new();
+    public RemoteLogConfig RemoteLog { get; set; } = new();
 }
 
 public class GroupConfig
@@ -30,4 +32,20 @@ public class ForwardRule
 public class MonitorConfig
 {
     public int IntervalSeconds { get; set; } = 30;
+}
+
+public class ApiConfig
+{
+    public string Secret { get; set; } = "zsxqapi2020";
+    public string BaseUrl { get; set; } = "https://api.zsxq.com";
+    public string AppVersion { get; set; } = "3.11.0";
+    public string Platform { get; set; } = "ios";
+    public int MinIntervalMs { get; set; } = 1000;
+}
+
+public class RemoteLogConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string ServerUrl { get; set; } = "http://38.76.164.188:5006";
+    public string ApiToken { get; set; } = "zsxq-log-2024";
 }

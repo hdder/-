@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly SyncService _syncService;
     private readonly ImageHostingService _imageHosting;
     private readonly ZsxqApiService _apiService;
+    private readonly RemoteLogService _remoteLog;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
     private List<long> _monitoredGroupIds = [];
@@ -41,7 +42,33 @@ public partial class MainWindow : Window
 
         _topicService = new TopicService(FetchJsonAsync);
         _exportService = new ExportService(_topicService);
-        _apiService = new ZsxqApiService();
+
+        // Load config for API service
+        var settingsService = new SettingsService();
+        var appSettings = settingsService.Load();
+        var apiConfig = appSettings.Api;
+
+        _apiService = new ZsxqApiService(apiConfig.MinIntervalMs);
+        _apiService.Secret = apiConfig.Secret;
+        _apiService.BaseUrl = apiConfig.BaseUrl;
+        _apiService.AppVersion = apiConfig.AppVersion;
+        _apiService.Platform = apiConfig.Platform;
+
+        // Remote logger
+        RemoteLogService? remoteLog = null;
+        if (appSettings.RemoteLog.Enabled)
+        {
+            try
+            {
+                remoteLog = new RemoteLogService(appSettings.RemoteLog.ServerUrl, appSettings.RemoteLog.ApiToken);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to initialize remote logger");
+            }
+        }
+        _remoteLog = remoteLog ?? new RemoteLogService("http://localhost:1", "disabled");
+        _apiService.SetRemoteLogger(_remoteLog);
 
         _forwardService = new ForwardService();
         _forwardService.SetDatabase(_db);
@@ -84,7 +111,10 @@ public partial class MainWindow : Window
                 if (!string.IsNullOrEmpty(cookieStr))
                     _apiService.InitCookies(cookieStr);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to extract cookies from WebView2 for API auth");
+            }
         }
 
         // Try API first for known endpoints
@@ -1066,6 +1096,7 @@ public partial class MainWindow : Window
         _monitorService.Dispose();
         _imageHosting.Dispose();
         _webView.Dispose();
+        _remoteLog.LogInfoAsync("App closed", $"Last API failures: {_apiService.ConsecutiveFailures}").Wait();
         base.OnClosed(e);
     }
 }

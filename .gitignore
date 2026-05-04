@@ -17,3 +17,6 @@ Thumbs.db
 ## Logs
 *.log
 例子/
+
+## Server (deployed separately)
+server/
