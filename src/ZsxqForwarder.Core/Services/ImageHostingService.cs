@@ -1,6 +1,9 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Serilog;
 using ZsxqForwarder.Core.Models;
 
 namespace ZsxqForwarder.Core.Services;
@@ -9,9 +12,10 @@ public class ImageHostingService : IDisposable
 {
     private readonly DatabaseService _db;
     private readonly string _imagesDir;
-    private readonly HttpListener _listener;
     private readonly HttpClient _httpClient;
-    private CancellationTokenSource? _cts;
+    private readonly HttpClient _uploadClient;
+
+    private const string UploadUrl = "https://api.gaotu.cn/v1/storage/upload";
 
     public int Port { get; }
     public string PublicHost { get; }
@@ -24,72 +28,122 @@ public class ImageHostingService : IDisposable
         PublicHost = publicHost;
         _imagesDir = imagesDir;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        _listener = new HttpListener();
+        _uploadClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
         BaseUrl = $"http://{PublicHost}:{Port}";
     }
 
     public void Start()
     {
         Directory.CreateDirectory(_imagesDir);
-
-        _listener.Prefixes.Add($"http://+:{Port}/images/");
-        _listener.Start();
-
-        _cts = new CancellationTokenSource();
-        _ = ServeAsync(_cts.Token);
     }
 
-    public void Stop()
-    {
-        _cts?.Cancel();
-        try { _listener.Stop(); } catch { }
-    }
+    public void Stop() { }
 
     public void Dispose()
     {
         Stop();
-        _listener.Close();
         _httpClient.Dispose();
+        _uploadClient.Dispose();
     }
 
     /// <summary>
-    /// Download a remote image, save to disk, store URL mapping in DB.
-    /// Returns the local URL or null on failure.
+    /// Download a remote image, upload to image hosting, cache URL in DB.
+    /// Returns the hosted CDN URL or null on failure.
     /// </summary>
     public async Task<string?> DownloadAndMapAsync(string remoteUrl, long topicId)
     {
         var urlHash = HashUrl(remoteUrl);
 
-        // Check if already downloaded
+        // Check cache first
         var existing = _db.GetLocalImageUrl(urlHash);
-        if (existing != null)
-        {
-            // Verify file still exists on disk
-            var existingPath = GetLocalPath(urlHash);
-            if (File.Exists(existingPath))
-                return existing;
-        }
+        if (existing != null && existing.StartsWith("http"))
+            return existing;
 
         try
         {
+            // Download image
             var bytes = await _httpClient.GetByteArrayAsync(remoteUrl);
-            var localPath = GetLocalPath(urlHash);
+
+            // Determine extension from content or URL
+            var ext = GetExtension(remoteUrl, bytes);
+
+            // Save to local disk as backup
+            var localPath = GetLocalPath(urlHash, ext);
             Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
             await File.WriteAllBytesAsync(localPath, bytes);
 
-            var localUrl = $"{BaseUrl}/images/{urlHash}.jpg";
-            _db.SaveLocalImage(urlHash, remoteUrl, localPath, localUrl);
-            return localUrl;
+            // Upload to image hosting
+            var hostedUrl = await UploadToImageHostAsync(bytes, $"zsxq_{urlHash}{ext}");
+            if (hostedUrl != null)
+            {
+                Log.Debug("Image uploaded: {Hash} -> {Url}", urlHash, hostedUrl);
+                _db.SaveLocalImage(urlHash, remoteUrl, localPath, hostedUrl);
+                return hostedUrl;
+            }
+
+            // Upload failed, fallback to original URL
+            Log.Warning("Image upload failed for {Hash}, using original URL", urlHash);
+            return remoteUrl;
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warning(ex, "Failed to download/upload image {Url}", remoteUrl);
+            return remoteUrl;
+        }
+    }
+
+    /// <summary>
+    /// Upload image bytes to gaotu image hosting.
+    /// Returns the CDN URL or null on failure.
+    /// </summary>
+    private async Task<string?> UploadToImageHostAsync(byte[] imageBytes, string fileName)
+    {
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            var fileContent = new ByteArrayContent(imageBytes);
+
+            // Determine content type from extension
+            var ext = Path.GetExtension(fileName).ToLower();
+            var contentType = ext switch
+            {
+                ".png" => "image/png",
+                ".gif" => "image/gif",
+                ".webp" => "image/webp",
+                _ => "image/jpeg"
+            };
+
+            fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            content.Add(fileContent, "file", fileName);
+
+            var resp = await _uploadClient.PostAsync(UploadUrl, content);
+            var body = await resp.Content.ReadAsStringAsync();
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                Log.Warning("Image upload HTTP error {Status}: {Body}", resp.StatusCode, body);
+                return null;
+            }
+
+            var json = JObject.Parse(body);
+            if (json["status"]?.Value<int>() == 0)
+            {
+                var url = json["data"]?["url"]?.Value<string>();
+                return url;
+            }
+
+            Log.Warning("Image upload API error: {Body}", body);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Image upload exception");
             return null;
         }
     }
 
     /// <summary>
-    /// Replace all remote image URLs in a Topic with local URLs.
-    /// Downloads images that haven't been cached yet.
+    /// Replace all remote image URLs in a Topic with hosted CDN URLs.
     /// </summary>
     public async Task<Topic> ReplaceImageUrlsAsync(Topic topic)
     {
@@ -102,26 +156,16 @@ public class ImageHostingService : IDisposable
             var remoteUrl = img.Original?.Url ?? img.Large?.Url ?? img.Url;
             if (string.IsNullOrEmpty(remoteUrl)) continue;
 
-            var localUrl = await DownloadAndMapAsync(remoteUrl, topic.TopicId);
-            if (localUrl != null)
-            {
-                imageUrlList.Add(localUrl);
-            }
-            else
-            {
-                imageUrlList.Add(remoteUrl);
-            }
+            var hostedUrl = await DownloadAndMapAsync(remoteUrl, topic.TopicId);
+            imageUrlList.Add(hostedUrl ?? remoteUrl);
         }
 
-        // Also replace URLs in text content ([图片] placeholders already reference these)
         topic.Talk.Text = ReplaceImageUrlsInText(topic.Talk.Text, imageUrlList);
-
         return topic;
     }
 
     private static string ReplaceImageUrlsInText(string text, List<string> localUrls)
     {
-        // Replace [图片] placeholders with local image URLs
         var idx = 0;
         var result = new StringBuilder();
         var parts = text.Split("[图片]");
@@ -141,52 +185,31 @@ public class ImageHostingService : IDisposable
         return result.ToString();
     }
 
-    private string GetLocalPath(string urlHash) => Path.Combine(_imagesDir, $"{urlHash}.jpg");
+    private string GetLocalPath(string urlHash, string ext) => Path.Combine(_imagesDir, $"{urlHash}{ext}");
 
     private static string HashUrl(string url)
     {
-        // Strip query params for dedup (signed URLs have different signatures)
         var pathPart = url.Split('?')[0];
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(pathPart));
-        return Convert.ToHexString(bytes)[..16]; // Use first 16 hex chars
+        return Convert.ToHexString(bytes)[..16];
     }
 
-    private async Task ServeAsync(CancellationToken ct)
+    private static string GetExtension(string url, byte[] bytes)
     {
-        while (!ct.IsCancellationRequested)
+        // Check URL extension
+        var pathPart = url.Split('?')[0];
+        var ext = Path.GetExtension(pathPart).ToLower();
+        if (ext is ".png" or ".gif" or ".webp" or ".jpg" or ".jpeg")
+            return ext;
+
+        // Check magic bytes
+        if (bytes.Length >= 8)
         {
-            try
-            {
-                var ctx = await _listener.GetContextAsync();
-
-                var path = ctx.Request.Url?.LocalPath ?? "";
-                if (path.StartsWith("/images/"))
-                {
-                    var fileName = path["/images/".Length..];
-                    var filePath = Path.Combine(_imagesDir, fileName);
-
-                    if (File.Exists(filePath))
-                    {
-                        ctx.Response.ContentType = "image/jpeg";
-                        ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
-                        var bytes = await File.ReadAllBytesAsync(filePath, ct);
-                        await ctx.Response.OutputStream.WriteAsync(bytes, ct);
-                    }
-                    else
-                    {
-                        ctx.Response.StatusCode = 404;
-                    }
-                }
-                else
-                {
-                    ctx.Response.StatusCode = 404;
-                }
-
-                ctx.Response.Close();
-            }
-            catch (HttpListenerException) when (ct.IsCancellationRequested) { break; }
-            catch (ObjectDisposedException) when (ct.IsCancellationRequested) { break; }
-            catch { }
+            if (bytes[0] == 0x89 && bytes[1] == 0x50) return ".png";  // PNG
+            if (bytes[0] == 0x47 && bytes[1] == 0x49) return ".gif";  // GIF
+            if (bytes[0] == 0x52 && bytes[1] == 0x49) return ".webp"; // WEBP (RIFF)
         }
+
+        return ".jpg";
     }
 }
