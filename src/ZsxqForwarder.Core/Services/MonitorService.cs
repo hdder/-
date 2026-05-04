@@ -19,7 +19,7 @@ public class MonitorService : IDisposable
     public event EventHandler? MonitorStarted;
     public event EventHandler? MonitorStopped;
 
-    public int IntervalSeconds { get; set; } = 30;
+    public int IntervalSeconds { get; set; } = 5;
     public bool IsRunning => _isRunning;
     public List<long> MonitoredGroups { get; set; } = [];
 

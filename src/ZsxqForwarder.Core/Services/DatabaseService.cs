@@ -346,7 +346,7 @@ public class DatabaseService
     public int GetMonitorInterval()
     {
         var val = GetSetting("MonitorInterval");
-        return int.TryParse(val, out var interval) ? interval : 30;
+        return int.TryParse(val, out var interval) ? interval : 5;
     }
 
     public void SetMonitorInterval(int seconds)

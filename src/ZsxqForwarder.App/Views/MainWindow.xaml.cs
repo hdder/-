@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     private readonly ImageHostingService _imageHosting;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
+    private List<long> _monitoredGroupIds = [];
+
     private ObservableCollection<GroupConfig> _groups = [];
     private ObservableCollection<TopicDisplay> _topics = [];
     private ObservableCollection<ForwardLogEntry> _forwardLogs = [];
@@ -162,6 +164,13 @@ public partial class MainWindow : Window
 
         Log.Information("Found {Count} groups in sidebar", groupList.Count);
 
+        // Filter: only scrape groups with forwarding rules if monitoring
+        if (_monitoredGroupIds.Count > 0)
+        {
+            groupList = groupList.Where(g => _monitoredGroupIds.Contains(g.group_id)).ToList();
+            Log.Information("Filtered to {Count} monitored groups", groupList.Count);
+        }
+
         // Step 3: Check if current page is already a group page — extract from it first
         var allDynamics = new List<object>();
         var allGroups = new List<object>();
@@ -191,7 +200,8 @@ public partial class MainWindow : Window
             // Navigate to group page
             Log.Information("Scraping group: {Name} ({Id})", group.name, group.group_id);
             var groupUrl = $"https://wx.zsxq.com{group.href}";
-            await NavigateAndWaitAsync(groupUrl, 4000);
+            var waitMs = _monitoredGroupIds.Count > 0 ? 2000 : 4000;
+            await NavigateAndWaitAsync(groupUrl, waitMs);
 
             var pageJson2 = await ExtractTopicsFromCurrentPageAsync(group.group_id, group.name);
             if (pageJson2 != null)
@@ -802,6 +812,7 @@ public partial class MainWindow : Window
         if (_monitorService.IsRunning)
         {
             _monitorService.Stop();
+            _monitoredGroupIds.Clear();
             BtnMonitor.Content = "开始监控";
             MonitorDot.Fill = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromRgb(189, 189, 189));
@@ -822,6 +833,7 @@ public partial class MainWindow : Window
             }
 
             await _monitorService.StartAsync(ruleGroupIds);
+            _monitoredGroupIds = ruleGroupIds;
 
             BtnMonitor.Content = "停止监控";
             MonitorDot.Fill = new System.Windows.Media.SolidColorBrush(
