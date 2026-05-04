@@ -89,6 +89,17 @@ public class DatabaseService
 
         // Migrate existing DB: add new columns if missing
         Migrate(conn);
+
+        // Clear old data with broken timestamps (CreateTime=0 means old DOM extraction)
+        CleanOldData(conn);
+    }
+
+    private static void CleanOldData(SqliteConnection conn)
+    {
+        // Delete topics with CreateTime=0 (broken timestamps from old extraction)
+        conn.Execute("DELETE FROM Topics WHERE CreateTime = 0");
+        // Reset sync state so next sync is treated as fresh
+        conn.Execute("DELETE FROM SyncState WHERE Key = 'initial_sync_done'");
     }
 
     private static void Migrate(SqliteConnection conn)

@@ -58,8 +58,6 @@ public partial class MainWindow : Window
 
         RefreshGroupList();
         RefreshForwardLogs();
-
-        _ = RunInitialSyncAsync();
     }
 
     /// <summary>
@@ -681,6 +679,19 @@ public partial class MainWindow : Window
         if (btn.Tag is not long topicId) return;
         if (_selectedGroup == null) return;
 
+        // Check if forwarding rules exist for this group
+        var rules = _db.GetForwardRules()
+            .Where(r => r.GroupId == _selectedGroup.GroupId && r.Enabled && !string.IsNullOrEmpty(r.WebhookUrl))
+            .ToList();
+
+        if (rules.Count == 0)
+        {
+            MessageBox.Show(
+                $"补发失败：没有为「{_selectedGroup.Name}」配置转发规则。\n请在设置中添加 Webhook 地址（钉钉/飞书等）。",
+                "补发失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var topic = _db.GetTopic(topicId);
         if (topic == null)
         {
@@ -688,14 +699,43 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Disable button during send
+        btn.IsEnabled = false;
+        btn.Content = "发送中...";
+
         try
         {
             await _forwardService.ForwardAsync(topic, _selectedGroup.GroupId, _selectedGroup.Name);
             RefreshForwardLogs();
+
+            // Check latest forward log to determine result
+            var latestLogs = _db.GetForwardLogsByGroup(_selectedGroup.GroupId, 5);
+            var latestForTopic = latestLogs.FirstOrDefault(l => l.TopicId == topicId);
+            if (latestForTopic != null && latestForTopic.Status == "Success")
+            {
+                MessageBox.Show(
+                    $"补发成功！已通过 {latestForTopic.ForwarderType} 发送到 {latestForTopic.WebhookUrl}",
+                    "补发成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else if (latestForTopic != null)
+            {
+                MessageBox.Show(
+                    $"补发失败：{latestForTopic.ErrorMessage}\n转发方式：{latestForTopic.ForwarderType}\n地址：{latestForTopic.WebhookUrl}",
+                    "补发失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            else
+            {
+                MessageBox.Show("补发已完成，请查看转发日志确认结果。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show($"补发失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            btn.IsEnabled = true;
+            btn.Content = "补发";
         }
     }
 
