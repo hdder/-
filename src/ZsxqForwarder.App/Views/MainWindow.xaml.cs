@@ -566,7 +566,8 @@ public partial class MainWindow : Window
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
                             talk: {{
                                 owner: {{name: authorName, avatar_url: avatar}},
-                                text: fullText
+                                text: fullText,
+                                images: images.map(u => ({{url: u, large: {{url: u}}, original: {{url: u}}}}))
                             }},
                             likes_count: 0,
                             comments_count: 0,
@@ -589,20 +590,32 @@ public partial class MainWindow : Window
                     const dateText = el.querySelector('.header-container .date')?.textContent?.trim() || '';
                     const content = el.querySelector('.talk-content-container .content')?.innerText?.trim() || '';
 
-                    if (!content && !authorName) return null;
+                    const images = [];
+                    const imgEls = el.querySelectorAll('.image-container img, .topic-image img');
+                    for (const img of imgEls) {{
+                        if (img.src) images.push(img.src);
+                    }}
+
+                    let fullText = content;
+                    if (images.length > 0) {{
+                        fullText += (fullText ? '\n' : '') + images.map(u => '[图片]').join('\n');
+                    }}
+
+                    if (!content && !authorName && images.length === 0) return null;
 
                     return {{
                         dynamic_id: 0,
                         action: 'create_topic',
                         create_time: dateText,
                         topic: {{
-                            topic_id: makeTopicId({groupId}, dateText, content),
+                            topic_id: makeTopicId({groupId}, dateText, fullText),
                             type: 'talk',
                             create_time: dateToMs(dateText),
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
                             talk: {{
                                 owner: {{name: authorName, avatar_url: avatar}},
-                                text: content
+                                text: fullText,
+                                images: images.map(u => ({{url: u, large: {{url: u}}, original: {{url: u}}}}))
                             }},
                             likes_count: 0,
                             comments_count: 0
