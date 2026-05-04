@@ -8,8 +8,10 @@ public class MonitorService : IDisposable
     private readonly ForwardService _forwardService;
     private readonly DatabaseService _db;
     private readonly Func<long, string, Task<List<Dynamic>>> _scrapeGroupPage;
+    private readonly ZsxqApiService? _apiService;
     private CancellationTokenSource? _cts;
     private bool _isRunning;
+    private int _roundRobinIndex;
 
     // Track last seen CreateTime per group
     private readonly Dictionary<long, long> _lastSeenCreateTime = [];
@@ -23,15 +25,16 @@ public class MonitorService : IDisposable
     public bool IsRunning => _isRunning;
     public List<long> MonitoredGroups { get; set; } = [];
 
-    /// <param name="scrapeGroupPage">Function that navigates to a group page and extracts dynamics. Args: (groupId, groupName)</param>
     public MonitorService(
         ForwardService forwardService,
         DatabaseService db,
-        Func<long, string, Task<List<Dynamic>>> scrapeGroupPage)
+        Func<long, string, Task<List<Dynamic>>> scrapeGroupPage,
+        ZsxqApiService? apiService = null)
     {
         _forwardService = forwardService;
         _db = db;
         _scrapeGroupPage = scrapeGroupPage;
+        _apiService = apiService;
     }
 
     public async Task StartAsync(List<long> groupIds)
@@ -41,9 +44,9 @@ public class MonitorService : IDisposable
         MonitoredGroups = groupIds;
         _cts = new CancellationTokenSource();
         _isRunning = true;
+        _roundRobinIndex = 0;
         _lastSeenCreateTime.Clear();
 
-        // Initialize last seen time from DB for each group
         foreach (var gid in groupIds)
         {
             var latestTopic = _db.GetTopicsByGroup(gid, 1).FirstOrDefault();
@@ -51,7 +54,8 @@ public class MonitorService : IDisposable
                 _lastSeenCreateTime[gid] = latestTopic.CreateTime;
         }
 
-        Log.Information("Monitor started: {Count} groups, interval {Interval}s", groupIds.Count, IntervalSeconds);
+        Log.Information("Monitor started: {Count} groups, interval {Interval}s, api={HasApi}",
+            groupIds.Count, IntervalSeconds, _apiService?.HasCookies ?? false);
         MonitorStarted?.Invoke(this, EventArgs.Empty);
         _ = RunMonitorLoopAsync(_cts.Token);
     }
@@ -71,63 +75,88 @@ public class MonitorService : IDisposable
             {
                 await Task.Delay(IntervalSeconds * 1000, ct);
 
-                foreach (var groupId in MonitoredGroups)
+                if (MonitoredGroups.Count == 0) continue;
+
+                // Round-robin: check one group per cycle for speed
+                var groupId = MonitoredGroups[_roundRobinIndex % MonitoredGroups.Count];
+                _roundRobinIndex++;
+
+                var groups = _db.GetGroups();
+                var groupName = groups.FirstOrDefault(g => g.GroupId == groupId)?.Name ?? "";
+
+                List<Dynamic> dynamics;
+
+                // Try API first
+                if (_apiService != null && _apiService.HasCookies)
+                {
+                    dynamics = await FetchGroupViaApiAsync(groupId, groupName);
+                }
+                else
+                {
+                    // Fallback to DOM scraping
+                    dynamics = await _scrapeGroupPage(groupId, groupName);
+                }
+
+                foreach (var d in dynamics)
                 {
                     if (ct.IsCancellationRequested) break;
+                    if (d.Topic == null) continue;
 
-                    // Get group name from DB
-                    var groups = _db.GetGroups();
-                    var group = groups.FirstOrDefault(g => g.GroupId == groupId);
-                    var groupName = group?.Name ?? "";
+                    var topicCreateTime = d.Topic.CreateTime;
 
-                    // Scrape the group page directly
-                    var dynamics = await _scrapeGroupPage(groupId, groupName);
-
-                    foreach (var d in dynamics)
+                    if (!_lastSeenCreateTime.TryGetValue(groupId, out var lastTime))
                     {
-                        if (ct.IsCancellationRequested) break;
-                        if (d.Topic == null) continue;
+                        _lastSeenCreateTime[groupId] = topicCreateTime;
+                        continue;
+                    }
 
-                        var topicCreateTime = d.Topic.CreateTime;
+                    if (topicCreateTime > lastTime)
+                    {
+                        Log.Information("New topic in group {GroupId}: time={Time}", groupId, topicCreateTime);
+                        _lastSeenCreateTime[groupId] = topicCreateTime;
 
-                        // Initialize baseline on first check
-                        if (!_lastSeenCreateTime.TryGetValue(groupId, out var lastTime))
+                        try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
+                        catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }
+
+                        NewTopicDetected?.Invoke(this, new NewTopicEventArgs
                         {
-                            _lastSeenCreateTime[groupId] = topicCreateTime;
-                            continue;
-                        }
+                            Topic = d.Topic,
+                            GroupId = groupId
+                        });
 
-                        // New message detected
-                        if (topicCreateTime > lastTime)
-                        {
-                            Log.Information("New topic in group {GroupId}: time={Time}", groupId, topicCreateTime);
-                            _lastSeenCreateTime[groupId] = topicCreateTime;
-
-                            // Save to DB
-                            try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
-                            catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }
-
-                            NewTopicDetected?.Invoke(this, new NewTopicEventArgs
-                            {
-                                Topic = d.Topic,
-                                GroupId = groupId
-                            });
-
-                            await _forwardService.ForwardAsync(d.Topic, groupId, groupName);
-                        }
+                        await _forwardService.ForwardAsync(d.Topic, groupId, groupName);
                     }
                 }
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 Log.Error(ex, "Monitor cycle error");
                 ErrorOccurred?.Invoke(this, new MonitorErrorEventArgs { GroupId = 0, Error = ex.Message });
             }
         }
+    }
+
+    private async Task<List<Dynamic>> FetchGroupViaApiAsync(long groupId, string groupName)
+    {
+        var result = await _apiService!.GetTopicsAsync(groupId, count: 10);
+        if (result?.RespData == null) return [];
+
+        var dynamics = new List<Dynamic>();
+        foreach (var topic in result.RespData.Topics)
+        {
+            dynamics.Add(new Dynamic
+            {
+                DynamicId = topic.TopicId,
+                Action = "create_topic",
+                CreateTimeStr = topic.CreateTime > 0
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(topic.CreateTime).ToString("yyyy-MM-dd HH:mm")
+                    : "",
+                Topic = topic,
+                Group = new DynamicGroup { GroupId = groupId, Name = groupName }
+            });
+        }
+        return dynamics;
     }
 
     public void Dispose()

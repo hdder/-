@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly DatabaseService _db;
     private readonly SyncService _syncService;
     private readonly ImageHostingService _imageHosting;
+    private readonly ZsxqApiService _apiService;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
 
     private List<long> _monitoredGroupIds = [];
@@ -40,6 +41,7 @@ public partial class MainWindow : Window
 
         _topicService = new TopicService(FetchJsonAsync);
         _exportService = new ExportService(_topicService);
+        _apiService = new ZsxqApiService();
 
         _forwardService = new ForwardService();
         _forwardService.SetDatabase(_db);
@@ -48,7 +50,7 @@ public partial class MainWindow : Window
         _forwardService.SetImageHosting(_imageHosting);
         ApplyForwarderSettings();
 
-        _monitorService = new MonitorService(_forwardService, _db, ScrapeGroupPageAsync);
+        _monitorService = new MonitorService(_forwardService, _db, ScrapeGroupPageAsync, _apiService);
         _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
@@ -63,19 +65,148 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Hybrid fetch: JS fetch in WebView2 context (wx.zsxq.com).
-    /// For dynamics API, hooks page fetch to capture signature headers.
+    /// Fetch JSON from zsxq API or DOM.
+    /// Tries API first (fast, structured), falls back to DOM scraping.
     /// </summary>
     private async Task<string> FetchJsonAsync(string url)
     {
         if (_webView.CoreWebView2 == null)
             throw new InvalidOperationException("WebView2 not initialized");
 
-        // For dynamics API, use intercepted headers from the page's own API calls
-        if (url.Contains("/v2/dynamics"))
-            return await FetchDynamicsAsync(url);
+        // Ensure API service has fresh cookies
+        if (!_apiService.HasCookies)
+        {
+            try
+            {
+                var cookieManager = _webView.CoreWebView2.CookieManager;
+                var cookies = await cookieManager.GetCookiesAsync("https://api.zsxq.com");
+                var cookieStr = string.Join("; ", cookies.Select(c => $"{c.Name}={c.Value}"));
+                if (!string.IsNullOrEmpty(cookieStr))
+                    _apiService.InitCookies(cookieStr);
+            }
+            catch { }
+        }
 
+        // Try API first for known endpoints
+        if (url.Contains("/v2/groups") || url.Contains("/v1/groups"))
+        {
+            var apiResult = await TryFetchGroupsFromApiAsync();
+            if (apiResult != null) return apiResult;
+            Log.Warning("API fetch for groups failed, falling back to DOM");
+        }
+
+        if (url.Contains("/v2/groups/") && url.Contains("/topics"))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(url, @"/groups/(\d+)/topics");
+            if (match.Success)
+            {
+                var groupId = long.Parse(match.Groups[1].Value);
+                var apiResult = await TryFetchTopicsFromApiAsync(groupId);
+                if (apiResult != null) return apiResult;
+                Log.Warning("API fetch for topics (group {GroupId}) failed, falling back to DOM", groupId);
+            }
+        }
+
+        if (url.Contains("/v2/dynamics"))
+        {
+            // Try API-based sync: fetch topics per monitored group
+            var apiResult = await TryFetchDynamicsFromApiAsync();
+            if (apiResult != null) return apiResult;
+            Log.Warning("API fetch for dynamics failed, falling back to DOM");
+            return await FetchDynamicsAsync(url);
+        }
+
+        // Fallback: simple JS fetch for other endpoints
         return await FetchSimpleAsync(url);
+    }
+
+    private async Task<string?> TryFetchGroupsFromApiAsync()
+    {
+        try
+        {
+            var result = await _apiService.GetGroupsAsync();
+            if (result?.Succeeded == true && result.RespData != null)
+            {
+                return JsonConvert.SerializeObject(new
+                {
+                    succeeded = true,
+                    resp_data = new
+                    {
+                        groups = result.RespData.Groups,
+                        is_end = true
+                    }
+                });
+            }
+        }
+        catch (Exception ex) { Log.Error(ex, "API get groups failed"); }
+        return null;
+    }
+
+    private async Task<string?> TryFetchTopicsFromApiAsync(long groupId, int count = 20, long? endTime = null)
+    {
+        try
+        {
+            var result = await _apiService.GetTopicsAsync(groupId, count, endTime);
+            if (result?.Succeeded == true && result.RespData != null)
+            {
+                return JsonConvert.SerializeObject(result);
+            }
+        }
+        catch (Exception ex) { Log.Error(ex, "API get topics failed for group {GroupId}", groupId); }
+        return null;
+    }
+
+    private async Task<string?> TryFetchDynamicsFromApiAsync()
+    {
+        // For dynamics (all groups), use API to get topics per group
+        var groupIds = _monitoredGroupIds.Count > 0
+            ? _monitoredGroupIds
+            : _db.GetGroups().Select(g => g.GroupId).ToList();
+
+        if (groupIds.Count == 0) return null;
+
+        var allDynamics = new List<Dynamic>();
+        var groups = _db.GetGroups();
+
+        foreach (var groupId in groupIds)
+        {
+            var result = await _apiService.GetTopicsAsync(groupId, count: 20);
+            if (result?.RespData == null) continue;
+
+            var group = groups.FirstOrDefault(g => g.GroupId == groupId);
+            var groupName = group?.Name ?? "";
+
+            foreach (var topic in result.RespData.Topics)
+            {
+                allDynamics.Add(new Dynamic
+                {
+                    DynamicId = topic.TopicId,
+                    Action = "create_topic",
+                    CreateTimeStr = topic.CreateTime > 0
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(topic.CreateTime).ToString("yyyy-MM-dd HH:mm")
+                        : "",
+                    Topic = topic,
+                    Group = new DynamicGroup
+                    {
+                        GroupId = groupId,
+                        Name = groupName,
+                    }
+                });
+            }
+        }
+
+        if (allDynamics.Count == 0) return null;
+
+        return JsonConvert.SerializeObject(new
+        {
+            succeeded = true,
+            resp_data = new
+            {
+                dynamics = allDynamics,
+                groups = groups.Select(g => new { group_id = g.GroupId, name = g.Name, avatar_url = g.AvatarUrl, background_url = g.BackgroundUrl }),
+                is_end = true
+            }
+        });
     }
 
     /// <summary>
@@ -320,17 +451,22 @@ public partial class MainWindow : Window
                     return d.getTime();
                 }}
 
-                // Generate unique topic_id using groupId + timestamp + index
-                function makeTopicId(groupId, dateText, idx) {{
+                // Generate stable topic_id from content hash (same content = same ID)
+                function makeTopicId(groupId, dateText, text) {{
                     const ms = dateToMs(dateText);
-                    return groupId + ms + idx;
+                    const raw = groupId + '|' + dateText + '|' + (text || '').substring(0, 100);
+                    let hash = 0;
+                    for (let i = 0; i < raw.length; i++) {{
+                        hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+                    }}
+                    return Math.abs(hash) + ms;
                 }}
 
                 // Extract from <app-topic type=""flow""> elements
                 const appTopics = document.querySelectorAll('app-topic[type=""flow""]');
                 for (const at of appTopics) {{
                     const item = extractAppTopic(at);
-                    if (item) {{ dynamics.push(item); topicIndex++; }}
+                    if (item) dynamics.push(item);
                 }}
 
                 // Fallback - extract from .topic-container (legacy)
@@ -394,7 +530,7 @@ public partial class MainWindow : Window
                         action: 'create_topic',
                         create_time: dateText,
                         topic: {{
-                            topic_id: makeTopicId({groupId}, dateText, topicIndex),
+                            topic_id: makeTopicId({groupId}, dateText, fullText),
                             type: 'talk',
                             create_time: dateToMs(dateText),
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
@@ -430,7 +566,7 @@ public partial class MainWindow : Window
                         action: 'create_topic',
                         create_time: dateText,
                         topic: {{
-                            topic_id: makeTopicId({groupId}, dateText, dynamics.length),
+                            topic_id: makeTopicId({groupId}, dateText, content),
                             type: 'talk',
                             create_time: dateToMs(dateText),
                             group: {{group_id: {groupId}, name: '{groupName.Replace("'", "\\'")}'}},
