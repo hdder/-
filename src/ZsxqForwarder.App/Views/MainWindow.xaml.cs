@@ -46,7 +46,7 @@ public partial class MainWindow : Window
         _forwardService.SetImageHosting(_imageHosting);
         ApplyForwarderSettings();
 
-        _monitorService = new MonitorService(_topicService, _forwardService);
+        _monitorService = new MonitorService(_topicService, _forwardService, _db);
         _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;

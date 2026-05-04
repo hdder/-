@@ -1,3 +1,4 @@
+using Serilog;
 using ZsxqForwarder.Core.Models;
 
 namespace ZsxqForwarder.Core.Services;
@@ -6,9 +7,12 @@ public class MonitorService : IDisposable
 {
     private readonly TopicService _topicService;
     private readonly ForwardService _forwardService;
-    private long _lastKnownDynamicId;
+    private readonly DatabaseService _db;
     private CancellationTokenSource? _cts;
     private bool _isRunning;
+
+    // Track last seen CreateTime per group
+    private readonly Dictionary<long, long> _lastSeenCreateTime = [];
 
     public event EventHandler<NewTopicEventArgs>? NewTopicDetected;
     public event EventHandler<MonitorErrorEventArgs>? ErrorOccurred;
@@ -19,10 +23,11 @@ public class MonitorService : IDisposable
     public bool IsRunning => _isRunning;
     public List<long> MonitoredGroups { get; set; } = [];
 
-    public MonitorService(TopicService topicService, ForwardService forwardService)
+    public MonitorService(TopicService topicService, ForwardService forwardService, DatabaseService? db = null)
     {
         _topicService = topicService;
         _forwardService = forwardService;
+        _db = db!;
     }
 
     public async Task StartAsync(List<long> groupIds)
@@ -32,8 +37,21 @@ public class MonitorService : IDisposable
         MonitoredGroups = groupIds;
         _cts = new CancellationTokenSource();
         _isRunning = true;
-        MonitorStarted?.Invoke(this, EventArgs.Empty);
+        _lastSeenCreateTime.Clear();
 
+        // Initialize last seen time from DB for each group
+        if (_db != null)
+        {
+            foreach (var gid in groupIds)
+            {
+                var latestTopic = _db.GetTopicsByGroup(gid, 1)
+                    .FirstOrDefault();
+                if (latestTopic != null && latestTopic.CreateTime > 0)
+                    _lastSeenCreateTime[gid] = latestTopic.CreateTime;
+            }
+        }
+
+        MonitorStarted?.Invoke(this, EventArgs.Empty);
         _ = RunMonitorLoopAsync(_cts.Token);
     }
 
@@ -52,34 +70,51 @@ public class MonitorService : IDisposable
             {
                 await Task.Delay(IntervalSeconds * 1000, ct);
 
-                var (dynamics, _) = await _topicService.FetchDynamicsPageAsync(count: 10);
+                // Fetch dynamics (this goes through DOM scraping)
+                var (dynamics, _) = await _topicService.FetchDynamicsPageAsync(count: 20);
                 if (dynamics.Count == 0) continue;
 
-                var maxDynamicId = dynamics.Max(d => d.DynamicId);
-                if (_lastKnownDynamicId == 0)
-                {
-                    _lastKnownDynamicId = maxDynamicId;
-                    continue;
-                }
-
-                var newDynamics = dynamics
-                    .Where(d => d.DynamicId > _lastKnownDynamicId && d.Topic != null)
-                    .ToList();
-
-                _lastKnownDynamicId = maxDynamicId;
-
-                foreach (var d in newDynamics)
+                // Group dynamics by groupId, find new ones by CreateTime
+                foreach (var d in dynamics)
                 {
                     if (ct.IsCancellationRequested) break;
+                    if (d.Topic == null) continue;
 
-                    var groupId = d.Group?.GroupId ?? 0;
-                    NewTopicDetected?.Invoke(this, new NewTopicEventArgs
+                    var groupId = d.Group?.GroupId ?? d.Topic.Group?.GroupId ?? 0;
+                    if (groupId == 0) continue;
+                    if (!MonitoredGroups.Contains(groupId)) continue;
+
+                    var topicCreateTime = d.Topic.CreateTime;
+
+                    // Initialize baseline on first check
+                    if (!_lastSeenCreateTime.TryGetValue(groupId, out var lastTime))
                     {
-                        Topic = d.Topic!,
-                        GroupId = groupId
-                    });
+                        _lastSeenCreateTime[groupId] = topicCreateTime;
+                        continue;
+                    }
 
-                    await _forwardService.ForwardAsync(d.Topic!, groupId);
+                    // New message detected
+                    if (topicCreateTime > lastTime)
+                    {
+                        Log.Information("New topic detected in group {GroupId}: create_time={CreateTime}", groupId, topicCreateTime);
+
+                        _lastSeenCreateTime[groupId] = topicCreateTime;
+
+                        // Save to DB
+                        if (_db != null)
+                        {
+                            try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
+                            catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }
+                        }
+
+                        NewTopicDetected?.Invoke(this, new NewTopicEventArgs
+                        {
+                            Topic = d.Topic,
+                            GroupId = groupId
+                        });
+
+                        await _forwardService.ForwardAsync(d.Topic, groupId, d.Group?.Name ?? "");
+                    }
                 }
             }
             catch (OperationCanceledException)
