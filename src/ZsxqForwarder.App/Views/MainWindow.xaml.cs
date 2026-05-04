@@ -809,19 +809,24 @@ public partial class MainWindow : Window
         }
         else
         {
-            var groupIds = _db.GetGroups().Select(g => g.GroupId).ToList();
-            if (groupIds.Count == 0)
+            var ruleGroupIds = _db.GetForwardRules()
+                .Where(r => r.Enabled && !string.IsNullOrEmpty(r.WebhookUrl))
+                .Select(r => r.GroupId)
+                .Distinct()
+                .ToList();
+
+            if (ruleGroupIds.Count == 0)
             {
-                MessageBox.Show("请先同步星球数据", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("没有配置转发规则，请先在设置中添加 Webhook 地址。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            await _monitorService.StartAsync(groupIds);
+            await _monitorService.StartAsync(ruleGroupIds);
 
             BtnMonitor.Content = "停止监控";
             MonitorDot.Fill = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Colors.Green);
-            MonitorStatus.Text = $"监控中 ({groupIds.Count} 个星球)";
+            MonitorStatus.Text = $"监控中 ({ruleGroupIds.Count} 个星球)";
         }
     }
 
