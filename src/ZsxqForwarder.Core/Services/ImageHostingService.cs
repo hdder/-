@@ -144,6 +144,7 @@ public class ImageHostingService : IDisposable
 
     /// <summary>
     /// Replace all remote image URLs in a Topic with hosted CDN URLs.
+    /// Updates both the Images list and Text content.
     /// </summary>
     public async Task<Topic> ReplaceImageUrlsAsync(Topic topic)
     {
@@ -154,10 +155,22 @@ public class ImageHostingService : IDisposable
         foreach (var img in topic.Talk.Images)
         {
             var remoteUrl = img.Original?.Url ?? img.Large?.Url ?? img.Url;
-            if (string.IsNullOrEmpty(remoteUrl)) continue;
+            if (string.IsNullOrEmpty(remoteUrl))
+            {
+                imageUrlList.Add(remoteUrl ?? "");
+                continue;
+            }
 
             var hostedUrl = await DownloadAndMapAsync(remoteUrl, topic.TopicId);
-            imageUrlList.Add(hostedUrl ?? remoteUrl);
+            var finalUrl = hostedUrl ?? remoteUrl;
+
+            // Replace all URL fields so forwarders get CDN URL regardless of which field they read
+            img.Url = finalUrl;
+            if (img.Original != null) img.Original.Url = finalUrl;
+            if (img.Large != null) img.Large.Url = finalUrl;
+            if (img.Thumbnail != null) img.Thumbnail.Url = finalUrl;
+
+            imageUrlList.Add(finalUrl);
         }
 
         topic.Talk.Text = ReplaceImageUrlsInText(topic.Talk.Text, imageUrlList);
