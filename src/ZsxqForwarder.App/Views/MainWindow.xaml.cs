@@ -48,7 +48,7 @@ public partial class MainWindow : Window
         _forwardService.SetImageHosting(_imageHosting);
         ApplyForwarderSettings();
 
-        _monitorService = new MonitorService(_topicService, _forwardService, _db);
+        _monitorService = new MonitorService(_forwardService, _db, ScrapeGroupPageAsync);
         _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
@@ -231,6 +231,31 @@ public partial class MainWindow : Window
         var json = JsonConvert.SerializeObject(result);
         Log.Information("Total extracted {Count} dynamics from {Groups} groups", allDynamics.Count, groupList.Count);
         return json;
+    }
+
+    /// <summary>
+    /// Monitor callback: navigate to a single group page, extract topics.
+    /// </summary>
+    private async Task<List<Dynamic>> ScrapeGroupPageAsync(long groupId, string groupName)
+    {
+        var groupUrl = $"https://wx.zsxq.com/group/{groupId}";
+        await NavigateAndWaitAsync(groupUrl, 2000);
+
+        var pageJson = await ExtractTopicsFromCurrentPageAsync(groupId, groupName);
+        if (pageJson == null) return [];
+
+        var pageData = JsonConvert.DeserializeObject<PageExtractResult>(pageJson);
+        if (pageData?.dynamics == null) return [];
+
+        // Convert raw objects back to Dynamic list
+        var dynamics = new List<Dynamic>();
+        foreach (var obj in pageData.dynamics)
+        {
+            var serialized = JsonConvert.SerializeObject(obj);
+            var d = JsonConvert.DeserializeObject<Dynamic>(serialized);
+            if (d != null) dynamics.Add(d);
+        }
+        return dynamics;
     }
 
     private class GroupInfo

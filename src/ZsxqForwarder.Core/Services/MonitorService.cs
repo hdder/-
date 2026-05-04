@@ -5,9 +5,9 @@ namespace ZsxqForwarder.Core.Services;
 
 public class MonitorService : IDisposable
 {
-    private readonly TopicService _topicService;
     private readonly ForwardService _forwardService;
     private readonly DatabaseService _db;
+    private readonly Func<long, string, Task<List<Dynamic>>> _scrapeGroupPage;
     private CancellationTokenSource? _cts;
     private bool _isRunning;
 
@@ -23,11 +23,15 @@ public class MonitorService : IDisposable
     public bool IsRunning => _isRunning;
     public List<long> MonitoredGroups { get; set; } = [];
 
-    public MonitorService(TopicService topicService, ForwardService forwardService, DatabaseService? db = null)
+    /// <param name="scrapeGroupPage">Function that navigates to a group page and extracts dynamics. Args: (groupId, groupName)</param>
+    public MonitorService(
+        ForwardService forwardService,
+        DatabaseService db,
+        Func<long, string, Task<List<Dynamic>>> scrapeGroupPage)
     {
-        _topicService = topicService;
         _forwardService = forwardService;
-        _db = db!;
+        _db = db;
+        _scrapeGroupPage = scrapeGroupPage;
     }
 
     public async Task StartAsync(List<long> groupIds)
@@ -40,17 +44,14 @@ public class MonitorService : IDisposable
         _lastSeenCreateTime.Clear();
 
         // Initialize last seen time from DB for each group
-        if (_db != null)
+        foreach (var gid in groupIds)
         {
-            foreach (var gid in groupIds)
-            {
-                var latestTopic = _db.GetTopicsByGroup(gid, 1)
-                    .FirstOrDefault();
-                if (latestTopic != null && latestTopic.CreateTime > 0)
-                    _lastSeenCreateTime[gid] = latestTopic.CreateTime;
-            }
+            var latestTopic = _db.GetTopicsByGroup(gid, 1).FirstOrDefault();
+            if (latestTopic != null && latestTopic.CreateTime > 0)
+                _lastSeenCreateTime[gid] = latestTopic.CreateTime;
         }
 
+        Log.Information("Monitor started: {Count} groups, interval {Interval}s", groupIds.Count, IntervalSeconds);
         MonitorStarted?.Invoke(this, EventArgs.Empty);
         _ = RunMonitorLoopAsync(_cts.Token);
     }
@@ -70,50 +71,50 @@ public class MonitorService : IDisposable
             {
                 await Task.Delay(IntervalSeconds * 1000, ct);
 
-                // Fetch dynamics (this goes through DOM scraping)
-                var (dynamics, _) = await _topicService.FetchDynamicsPageAsync(count: 20);
-                if (dynamics.Count == 0) continue;
-
-                // Group dynamics by groupId, find new ones by CreateTime
-                foreach (var d in dynamics)
+                foreach (var groupId in MonitoredGroups)
                 {
                     if (ct.IsCancellationRequested) break;
-                    if (d.Topic == null) continue;
 
-                    var groupId = d.Group?.GroupId ?? d.Topic.Group?.GroupId ?? 0;
-                    if (groupId == 0) continue;
-                    if (!MonitoredGroups.Contains(groupId)) continue;
+                    // Get group name from DB
+                    var groups = _db.GetGroups();
+                    var group = groups.FirstOrDefault(g => g.GroupId == groupId);
+                    var groupName = group?.Name ?? "";
 
-                    var topicCreateTime = d.Topic.CreateTime;
+                    // Scrape the group page directly
+                    var dynamics = await _scrapeGroupPage(groupId, groupName);
 
-                    // Initialize baseline on first check
-                    if (!_lastSeenCreateTime.TryGetValue(groupId, out var lastTime))
+                    foreach (var d in dynamics)
                     {
-                        _lastSeenCreateTime[groupId] = topicCreateTime;
-                        continue;
-                    }
+                        if (ct.IsCancellationRequested) break;
+                        if (d.Topic == null) continue;
 
-                    // New message detected
-                    if (topicCreateTime > lastTime)
-                    {
-                        Log.Information("New topic detected in group {GroupId}: create_time={CreateTime}", groupId, topicCreateTime);
+                        var topicCreateTime = d.Topic.CreateTime;
 
-                        _lastSeenCreateTime[groupId] = topicCreateTime;
-
-                        // Save to DB
-                        if (_db != null)
+                        // Initialize baseline on first check
+                        if (!_lastSeenCreateTime.TryGetValue(groupId, out var lastTime))
                         {
-                            try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
-                            catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }
+                            _lastSeenCreateTime[groupId] = topicCreateTime;
+                            continue;
                         }
 
-                        NewTopicDetected?.Invoke(this, new NewTopicEventArgs
+                        // New message detected
+                        if (topicCreateTime > lastTime)
                         {
-                            Topic = d.Topic,
-                            GroupId = groupId
-                        });
+                            Log.Information("New topic in group {GroupId}: time={Time}", groupId, topicCreateTime);
+                            _lastSeenCreateTime[groupId] = topicCreateTime;
 
-                        await _forwardService.ForwardAsync(d.Topic, groupId, d.Group?.Name ?? "");
+                            // Save to DB
+                            try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
+                            catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }
+
+                            NewTopicDetected?.Invoke(this, new NewTopicEventArgs
+                            {
+                                Topic = d.Topic,
+                                GroupId = groupId
+                            });
+
+                            await _forwardService.ForwardAsync(d.Topic, groupId, groupName);
+                        }
                     }
                 }
             }
@@ -123,6 +124,7 @@ public class MonitorService : IDisposable
             }
             catch (Exception ex)
             {
+                Log.Error(ex, "Monitor cycle error");
                 ErrorOccurred?.Invoke(this, new MonitorErrorEventArgs { GroupId = 0, Error = ex.Message });
             }
         }
