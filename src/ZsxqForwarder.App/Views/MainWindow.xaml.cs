@@ -843,7 +843,7 @@ public partial class MainWindow : Window
         var time = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
         time.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
         time.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(8, 0, 0, 0));
-        time.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(System.Windows.Media.Color.FromRgb(139, 148, 158)));
+        time.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(139, 148, 158)));
         time.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ForwardedAt"));
         header.AppendChild(time);
 
