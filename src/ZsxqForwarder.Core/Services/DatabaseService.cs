@@ -110,6 +110,9 @@ public class DatabaseService
 
         try { conn.Execute("ALTER TABLE Groups ADD COLUMN BackgroundUrl TEXT NOT NULL DEFAULT ''"); }
         catch { /* column already exists */ }
+
+        try { conn.Execute("ALTER TABLE LocalImages ADD COLUMN FeishuImageKey TEXT"); }
+        catch { /* column already exists */ }
     }
 
     // Groups
@@ -367,6 +370,20 @@ public class DatabaseService
     {
         using var conn = new SqliteConnection(ConnectionString);
         return conn.QueryFirstOrDefault<string>("SELECT LocalUrl FROM LocalImages WHERE UrlHash = @UrlHash", new { UrlHash = urlHash });
+    }
+
+    public void SaveFeishuImageKey(string cdnUrl, string imageKey)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        conn.Execute("UPDATE LocalImages SET FeishuImageKey = @ImageKey WHERE LocalUrl = @CdnUrl",
+            new { ImageKey = imageKey, CdnUrl = cdnUrl });
+    }
+
+    public string? GetFeishuImageKey(string cdnUrl)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        return conn.QueryFirstOrDefault<string>("SELECT FeishuImageKey FROM LocalImages WHERE LocalUrl = @CdnUrl",
+            new { CdnUrl = cdnUrl });
     }
 
     public int GetImageServerPort()

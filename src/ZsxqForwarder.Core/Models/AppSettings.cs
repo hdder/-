@@ -7,6 +7,7 @@ public class AppSettings
     public MonitorConfig Monitor { get; set; } = new();
     public ApiConfig Api { get; set; } = new();
     public RemoteLogConfig RemoteLog { get; set; } = new();
+    public FeishuConfig Feishu { get; set; } = new();
 }
 
 public class GroupConfig
@@ -48,4 +49,10 @@ public class RemoteLogConfig
     public bool Enabled { get; set; } = true;
     public string ServerUrl { get; set; } = "http://38.76.164.188:5006";
     public string ApiToken { get; set; } = "zsxq-log-2024";
+}
+
+public class FeishuConfig
+{
+    public string AppId { get; set; } = "";
+    public string AppSecret { get; set; } = "";
 }

@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly ZsxqApiService _apiService;
     private readonly RemoteLogService _remoteLog;
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 _webView;
+    private FeishuConfig _feishuConfig = new();
 
     private List<long> _monitoredGroupIds = [];
 
@@ -47,6 +48,7 @@ public partial class MainWindow : Window
         var settingsService = new SettingsService();
         var appSettings = settingsService.Load();
         var apiConfig = appSettings.Api;
+        _feishuConfig = appSettings.Feishu;
 
         _apiService = new ZsxqApiService(apiConfig.MinIntervalMs);
         _apiService.Secret = apiConfig.Secret;
@@ -664,10 +666,11 @@ public partial class MainWindow : Window
         return f;
     }
 
-    private static IForwarder CreateFeishu(ForwardRule rule)
+    private IForwarder CreateFeishu(ForwardRule rule)
     {
         var f = new FeishuForwarder { IsEnabled = true };
         f.Configure(rule.WebhookUrl, rule.Secret);
+        f.SetFeishuCredentials(_feishuConfig.AppId, _feishuConfig.AppSecret, _db);
         return f;
     }
 
