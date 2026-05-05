@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json;
+using Serilog;
 using ZsxqForwarder.Core.Models;
 using ZsxqForwarder.Core.Services;
 
@@ -27,28 +29,67 @@ public class DingTalkForwarder : IForwarder
 
         var url = BuildUrl();
 
-        // Send main content as markdown
-        var (title, markdown) = FormatMarkdown(topic);
-        await PostAsync(url, new
-        {
-            msgtype = "markdown",
-            markdown = new { title, text = markdown }
-        });
+        // Build full text with image markdown
+        var (title, fullText) = FormatContent(topic);
 
-        // Send images separately
-        if (topic.Talk?.Images?.Count > 0)
+        // Extract markdown image links: ![xxx](url)
+        var imagePattern = @"!\[.*?\]\((.*?)\)";
+        var imageMatches = Regex.Matches(fullText, imagePattern);
+
+        if (imageMatches.Count > 0)
         {
-            foreach (var img in topic.Talk.Images)
+            // Send each image as separate message first
+            foreach (Match match in imageMatches)
             {
-                var imgUrl = img.Original?.Url ?? img.Large?.Url ?? img.Url;
+                var imgUrl = match.Groups[1].Value.Trim();
                 if (!string.IsNullOrEmpty(imgUrl))
                 {
                     await PostAsync(url, new
                     {
                         msgtype = "markdown",
-                        markdown = new { title = "图片", text = $"![image]({imgUrl})" }
+                        markdown = new { title = "图片", text = $"![图片]({imgUrl})" }
                     });
                 }
+            }
+
+            // Send remaining text (images removed)
+            var textOnly = Regex.Replace(fullText, imagePattern, "").Trim();
+            if (!string.IsNullOrWhiteSpace(textOnly))
+            {
+                await PostAsync(url, new
+                {
+                    msgtype = "markdown",
+                    markdown = new { title, text = textOnly }
+                });
+            }
+        }
+        else
+        {
+            // No images in text, also check topic.Talk.Images
+            if (topic.Talk?.Images?.Count > 0)
+            {
+                foreach (var img in topic.Talk.Images)
+                {
+                    var imgUrl = img.Original?.Url ?? img.Large?.Url ?? img.Url;
+                    if (!string.IsNullOrEmpty(imgUrl))
+                    {
+                        await PostAsync(url, new
+                        {
+                            msgtype = "markdown",
+                            markdown = new { title = "图片", text = $"![图片]({imgUrl})" }
+                        });
+                    }
+                }
+            }
+
+            // Send main content
+            if (!string.IsNullOrWhiteSpace(fullText))
+            {
+                await PostAsync(url, new
+                {
+                    msgtype = "markdown",
+                    markdown = new { title, text = fullText }
+                });
             }
         }
 
@@ -76,7 +117,7 @@ public class DingTalkForwarder : IForwarder
         return $"{_webhookUrl}&timestamp={timestamp}&sign={Uri.EscapeDataString(sign)}";
     }
 
-    private static (string title, string markdown) FormatMarkdown(Topic topic)
+    private static (string title, string text) FormatContent(Topic topic)
     {
         var author = topic.Talk?.Owner?.Name
                      ?? topic.Task?.Owner?.Name
@@ -105,6 +146,12 @@ public class DingTalkForwarder : IForwarder
         var json = JsonConvert.SerializeObject(payload);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
         var response = await _httpClient.PostAsync(url, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Log.Warning("DingTalk send failed: {Status} {Body}", response.StatusCode, body);
+        }
         response.EnsureSuccessStatusCode();
     }
 }

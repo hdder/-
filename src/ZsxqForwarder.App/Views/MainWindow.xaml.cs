@@ -650,6 +650,8 @@ public partial class MainWindow : Window
         {
             "DingTalk" => CreateDingTalk(rule),
             "Feishu" => CreateFeishu(rule),
+            "WeChat" => CreateWeChat(rule),
+            "Tuan" => CreateTuan(rule),
             _ => null
         });
     }
@@ -664,6 +666,20 @@ public partial class MainWindow : Window
     private static IForwarder CreateFeishu(ForwardRule rule)
     {
         var f = new FeishuForwarder { IsEnabled = true };
+        f.Configure(rule.WebhookUrl, rule.Secret);
+        return f;
+    }
+
+    private static IForwarder CreateWeChat(ForwardRule rule)
+    {
+        var f = new WechatForwarder { IsEnabled = true };
+        f.Configure(rule.WebhookUrl);
+        return f;
+    }
+
+    private static IForwarder CreateTuan(ForwardRule rule)
+    {
+        var f = new TuanForwarder { IsEnabled = true };
         f.Configure(rule.WebhookUrl);
         return f;
     }
@@ -979,6 +995,8 @@ public partial class MainWindow : Window
         {
             "DingTalk" => CreateDingTalk(rule) as IForwarder,
             "Feishu" => CreateFeishu(rule),
+            "WeChat" => CreateWeChat(rule),
+            "Tuan" => CreateTuan(rule),
             _ => null
         };
 

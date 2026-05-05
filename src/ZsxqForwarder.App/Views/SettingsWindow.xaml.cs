@@ -21,6 +21,17 @@ public partial class SettingsWindow : Window
         LoadSettings();
         MonitorInterval.ValueChanged += (s, e) =>
             IntervalDisplay.Text = $"{(int)MonitorInterval.Value} 秒";
+
+        // Update labels when forwarder type changes
+        RuleForwarderType.SelectionChanged += (s, e) =>
+        {
+            var item = RuleForwarderType.SelectedItem as ComboBoxItem;
+            var tag = item?.Tag?.ToString();
+            WebhookLabel.Text = tag == "Tuan" ? "Access Token" : "Webhook URL";
+            RuleWebhookUrl.ToolTip = tag == "Tuan"
+                ? "填入团园的 access_token"
+                : "填入 Webhook URL";
+        };
     }
 
     private void LoadSettings()

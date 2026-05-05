@@ -77,11 +77,13 @@
                             <ComboBox x:Name="RuleForwarderType" Margin="0,0,0,8">
                                 <ComboBoxItem Content="钉钉" Tag="DingTalk"/>
                                 <ComboBoxItem Content="飞书" Tag="Feishu"/>
+                                <ComboBoxItem Content="企业微信" Tag="WeChat"/>
+                                <ComboBoxItem Content="团园" Tag="Tuan"/>
                             </ComboBox>
-                            <TextBlock Text="Webhook URL" FontSize="12" Margin="0,0,0,4"
+                            <TextBlock x:Name="WebhookLabel" Text="Webhook URL" FontSize="12" Margin="0,0,0,4"
                                        Foreground="{StaticResource TextSecondaryBrush}"/>
                             <TextBox x:Name="RuleWebhookUrl" Margin="0,0,0,8"/>
-                            <TextBlock Text="加签密钥（仅钉钉需要）" FontSize="12" Margin="0,0,0,4"
+                            <TextBlock Text="加签密钥（钉钉/飞书需要）" FontSize="12" Margin="0,0,0,4"
                                        Foreground="{StaticResource TextSecondaryBrush}"/>
                             <TextBox x:Name="RuleSecret" Margin="0,0,0,8"/>
                             <Button Content="添加规则" Padding="16,6" HorizontalAlignment="Left"

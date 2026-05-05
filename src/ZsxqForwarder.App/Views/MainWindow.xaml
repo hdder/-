@@ -245,8 +245,8 @@
                                             <DataTemplate>
                                                 <Border Margin="0,0,4,4" CornerRadius="4"
                                                         BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
-                                                    <Image Source="{Binding}" Width="120" Height="120"
-                                                           Stretch="UniformToFill" StretchDirection="Both"/>
+                                                    <Image Source="{Binding}" MaxWidth="400" MaxHeight="400"
+                                                           Stretch="Uniform" StretchDirection="Both"/>
                                                 </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
