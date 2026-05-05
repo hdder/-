@@ -17,6 +17,7 @@ public class ForwardService
     private Func<ForwardRule, IForwarder?>? _forwarderFactory;
     private DatabaseService? _db;
     private ImageHostingService? _imageHosting;
+    private RemoteLogService? _remoteLogger;
 
     public IReadOnlyList<IForwarder> Forwarders => _forwarders.AsReadOnly();
 
@@ -48,6 +49,11 @@ public class ForwardService
     public void SetImageHosting(ImageHostingService? service)
     {
         _imageHosting = service;
+    }
+
+    public void SetRemoteLogger(RemoteLogService? logger)
+    {
+        _remoteLogger = logger;
     }
 
     public async Task ForwardAsync(Topic topic, long groupId, string groupName = "")
@@ -98,6 +104,30 @@ public class ForwardService
             status = "Failed";
             errorMsg = ex.Message;
             Log.Error(ex, "Forward failed for topic {TopicId} to {Type}", topic.TopicId, rule.ForwarderType);
+        }
+
+        // Report message to remote server
+        if (_remoteLogger != null)
+        {
+            try
+            {
+                var imageUrls = topic.Talk?.Images?
+                    .Select(i => i.Original?.Url ?? i.Large?.Url ?? i.Url)
+                    .Where(u => !string.IsNullOrEmpty(u))
+                    .ToList() ?? [];
+                _ = _remoteLogger.PostMessageAsync(new
+                {
+                    topic_id = topic.TopicId,
+                    group_id = groupId,
+                    group_name = rule.GroupName,
+                    author,
+                    content = preview,
+                    images = imageUrls,
+                    forwarder_type = rule.ForwarderType,
+                    status
+                });
+            }
+            catch { }
         }
 
         // Save topic and log

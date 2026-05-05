@@ -103,6 +103,22 @@ public class RemoteLogService
         await LogAsync("info", title, message);
     }
 
+    /// <summary>
+    /// Post a forwarded message to the remote messages API.
+    /// </summary>
+    public async Task PostMessageAsync(object messageData)
+    {
+        if (!_enabled) return;
+
+        try
+        {
+            var json = JsonConvert.SerializeObject(messageData);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            await _httpClient.PostAsync("/api/messages", content);
+        }
+        catch { }
+    }
+
     private static string Truncate(string s, int maxLen)
     {
         if (string.IsNullOrEmpty(s)) return "";

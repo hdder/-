@@ -75,6 +75,7 @@ public partial class MainWindow : Window
         _imageHosting = new ImageHostingService(_db, DatabaseService.GetImagesDir(), _db.GetImageServerPort(), _db.GetImagePublicHost());
         _imageHosting.Start();
         _forwardService.SetImageHosting(_imageHosting);
+        _forwardService.SetRemoteLogger(_remoteLog);
         ApplyForwarderSettings();
 
         _monitorService = new MonitorService(_forwardService, _db, ScrapeGroupPageAsync, _apiService);
@@ -802,18 +803,38 @@ public partial class MainWindow : Window
         DetailTime.Text = topic.CreatedAt.ToString("yyyy-MM-dd HH:mm");
 
         var text = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
-        DetailText.Text = text;
 
-        var images = topic.Talk?.Images?.Select(i => i.Large?.Url ?? i.Url).ToList();
-        if (images?.Count > 0)
+        // Extract image URLs from text markdown: ![xxx](url)
+        var imageUrlsFromText = new List<string>();
+        var mdImagePattern = @"!\[.*?\]\((.*?)\)";
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text, mdImagePattern))
         {
-            DetailImages.ItemsSource = images;
+            if (!string.IsNullOrEmpty(m.Groups[1].Value))
+                imageUrlsFromText.Add(m.Groups[1].Value.Trim());
+        }
+
+        // Combine: structured images + text-extracted images
+        var allImageUrls = new List<string>();
+        if (topic.Talk?.Images?.Count > 0)
+            allImageUrls.AddRange(topic.Talk.Images.Select(i => i.Original?.Url ?? i.Large?.Url ?? i.Url).Where(u => !string.IsNullOrEmpty(u)));
+        foreach (var url in imageUrlsFromText)
+            if (!allImageUrls.Contains(url))
+                allImageUrls.Add(url);
+
+        if (allImageUrls.Count > 0)
+        {
+            DetailImages.ItemsSource = allImageUrls;
             DetailImages.Visibility = Visibility.Visible;
         }
         else
         {
             DetailImages.Visibility = Visibility.Collapsed;
         }
+
+        // Display text: replace [图片] with link text, remove markdown image syntax
+        var displayText = System.Text.RegularExpressions.Regex.Replace(text, @"!\[图片\]\((.*?)\)", m => $"[查看图片]({m.Groups[1].Value})");
+        displayText = displayText.Replace("[图片]", "[图片链接暂无]");
+        DetailText.Text = displayText;
 
         DetailLikes.Text = topic.LikesCount.ToString();
         DetailComments.Text = topic.CommentsCount.ToString();
