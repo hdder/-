@@ -695,7 +695,6 @@ public partial class MainWindow : Window
     private void RefreshForwardLogs()
     {
         _forwardLogs = new ObservableCollection<ForwardLogEntry>(_db.GetForwardLogs(50));
-        ForwardLogList.ItemsSource = _forwardLogs;
     }
 
     private void OnGroupSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -783,81 +782,80 @@ public partial class MainWindow : Window
         BtnLoadMore.IsEnabled = true;
     }
 
-    private async void OnTopicSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    // Forward log popup
+    private void OnShowLogs(object sender, RoutedEventArgs e)
     {
-        if (TopicList.SelectedItem is not TopicDisplay display) return;
-
-        var topic = _rawTopics.FirstOrDefault(t => t.TopicId == display.TopicId);
-        if (topic == null) return;
-
-        DetailPlaceholder.Visibility = Visibility.Collapsed;
-        DetailAuthor.Visibility = Visibility.Visible;
-        DetailText.Visibility = Visibility.Visible;
-        DetailStats.Visibility = Visibility.Visible;
-
-        var author = topic.Talk?.Owner?.Name
-                     ?? topic.Task?.Owner?.Name
-                     ?? topic.Question?.Owner?.Name
-                     ?? "Unknown";
-        DetailAuthorName.Text = author;
-        DetailTime.Text = topic.CreatedAt.ToString("yyyy-MM-dd HH:mm");
-
-        var text = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
-
-        // Extract image URLs from text markdown: ![xxx](url)
-        var imageUrlsFromText = new List<string>();
-        var mdImagePattern = @"!\[.*?\]\((.*?)\)";
-        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text, mdImagePattern))
+        var logs = _db.GetForwardLogs(100);
+        var win = new Window
         {
-            if (!string.IsNullOrEmpty(m.Groups[1].Value))
-                imageUrlsFromText.Add(m.Groups[1].Value.Trim());
-        }
-
-        // Combine: structured images + text-extracted images
-        var allImageUrls = new List<string>();
-        if (topic.Talk?.Images?.Count > 0)
-            allImageUrls.AddRange(topic.Talk.Images.Select(i => i.Original?.Url ?? i.Large?.Url ?? i.Url).Where(u => !string.IsNullOrEmpty(u)));
-        foreach (var url in imageUrlsFromText)
-            if (!allImageUrls.Contains(url))
-                allImageUrls.Add(url);
-
-        if (allImageUrls.Count > 0)
+            Title = "转发日志",
+            Width = 700,
+            Height = 500,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this
+        };
+        var list = new System.Windows.Controls.ListBox
         {
-            DetailImages.ItemsSource = allImageUrls;
-            DetailImages.Visibility = Visibility.Visible;
-        }
-        else
+            ItemsSource = logs,
+            DisplayMemberPath = "."
+        };
+        list.ItemTemplate = CreateLogItemTemplate();
+        win.Content = new System.Windows.Controls.ScrollViewer
         {
-            DetailImages.Visibility = Visibility.Collapsed;
-        }
+            Content = list
+        };
+        win.Show();
+    }
 
-        // Display text: replace [图片] with link text, remove markdown image syntax
-        var displayText = System.Text.RegularExpressions.Regex.Replace(text, @"!\[图片\]\((.*?)\)", m => $"[查看图片]({m.Groups[1].Value})");
-        displayText = displayText.Replace("[图片]", "[图片链接暂无]");
-        DetailText.Text = displayText;
+    private static System.Windows.DataTemplate CreateLogItemTemplate()
+    {
+        var template = new System.Windows.DataTemplate();
+        var factory = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
+        factory.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, System.Windows.Controls.Orientation.Vertical);
+        factory.SetValue(System.Windows.Controls.StackPanel.MarginProperty, new Thickness(8, 4, 8, 4));
 
-        DetailLikes.Text = topic.LikesCount.ToString();
-        DetailComments.Text = topic.CommentsCount.ToString();
+        var header = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
+        header.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, System.Windows.Controls.Orientation.Horizontal);
+        header.SetValue(System.Windows.Controls.StackPanel.MarginProperty, new Thickness(0, 0, 0, 4));
 
-        if (topic.CommentsCount > 0)
-        {
-            try
-            {
-                var comments = await _topicService.GetCommentsAsync(topic.TopicId);
-                CommentsHeader.Visibility = Visibility.Visible;
-                CommentsList.Visibility = Visibility.Visible;
-                CommentsList.ItemsSource = comments;
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Failed to load comments for topic {Id}", topic.TopicId);
-            }
-        }
-        else
-        {
-            CommentsHeader.Visibility = Visibility.Collapsed;
-            CommentsList.Visibility = Visibility.Collapsed;
-        }
+        var author = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        author.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
+        author.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Medium);
+        author.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Author"));
+        header.AppendChild(author);
+
+        var arrow = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        arrow.SetValue(System.Windows.Controls.TextBlock.TextProperty, " → ");
+        arrow.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
+        header.AppendChild(arrow);
+
+        var type = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        type.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
+        type.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ForwarderType"));
+        header.AppendChild(type);
+
+        var status = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        status.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+        status.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(8, 0, 0, 0));
+        status.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Status"));
+        header.AppendChild(status);
+
+        var time = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        time.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 10.0);
+        time.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(8, 0, 0, 0));
+        time.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, new SolidColorBrush(System.Windows.Media.Color.FromRgb(139, 148, 158)));
+        time.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ForwardedAt"));
+        header.AppendChild(time);
+
+        factory.AppendChild(header);
+
+        var preview = new System.Windows.FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        preview.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
+        preview.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ContentPreview"));
+        factory.AppendChild(preview);
+
+        template.VisualTree = factory;
+        return template;
     }
 
     // Sync
@@ -1163,13 +1161,40 @@ public class TopicDisplay
     public int CommentsCount { get; set; }
     public bool Digested { get; }
     public DateTime CreatedAt { get; }
+    public List<string> ImageUrls { get; }
 
     public TopicDisplay(Topic topic)
     {
         TopicId = topic.TopicId;
         Type = topic.Type;
         var text = topic.Talk?.Text ?? topic.Task?.Text ?? topic.Question?.Text ?? "";
-        DisplayText = text.Length > 150 ? text[..150] + "..." : text;
+
+        // Extract image URLs from markdown: ![xxx](url)
+        var imageUrls = new List<string>();
+        var mdImagePattern = @"!\[.*?\]\((.*?)\)";
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text, mdImagePattern))
+        {
+            if (!string.IsNullOrEmpty(m.Groups[1].Value))
+                imageUrls.Add(m.Groups[1].Value.Trim());
+        }
+
+        // Also add from structured images
+        if (topic.Talk?.Images?.Count > 0)
+        {
+            foreach (var img in topic.Talk.Images)
+            {
+                var url = img.Original?.Url ?? img.Large?.Url ?? img.Url;
+                if (!string.IsNullOrEmpty(url) && !imageUrls.Contains(url))
+                    imageUrls.Add(url);
+            }
+        }
+
+        ImageUrls = imageUrls;
+
+        // Clean display text: remove markdown images, replace [图片]
+        var cleanText = System.Text.RegularExpressions.Regex.Replace(text, @"!\[.*?\]\(.*?\)", "").Trim();
+        cleanText = cleanText.Replace("[图片]", "").Trim();
+        DisplayText = cleanText.Length > 500 ? cleanText[..500] + "..." : cleanText;
         AuthorName = topic.Talk?.Owner?.Name ?? topic.Task?.Owner?.Name ?? "Unknown";
         LikesCount = topic.LikesCount;
         CommentsCount = topic.CommentsCount;
