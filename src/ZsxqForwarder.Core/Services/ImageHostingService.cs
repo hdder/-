@@ -37,6 +37,13 @@ public class ImageHostingService : IDisposable
         Directory.CreateDirectory(_imagesDir);
     }
 
+    public void SetCookies(string cookies)
+    {
+        _httpClient.DefaultRequestHeaders.Remove("Cookie");
+        if (!string.IsNullOrEmpty(cookies))
+            _httpClient.DefaultRequestHeaders.Add("Cookie", cookies);
+    }
+
     public void Stop() { }
 
     public void Dispose()

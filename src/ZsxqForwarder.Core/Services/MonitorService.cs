@@ -9,6 +9,7 @@ public class MonitorService : IDisposable
     private readonly DatabaseService _db;
     private readonly Func<long, string, Task<List<Dynamic>>> _scrapeGroupPage;
     private readonly ZsxqApiService? _apiService;
+    private ImageHostingService? _imageHosting;
     private CancellationTokenSource? _cts;
     private bool _isRunning;
     private int _roundRobinIndex;
@@ -35,6 +36,11 @@ public class MonitorService : IDisposable
         _db = db;
         _scrapeGroupPage = scrapeGroupPage;
         _apiService = apiService;
+    }
+
+    public void SetImageHosting(ImageHostingService? service)
+    {
+        _imageHosting = service;
     }
 
     public async Task StartAsync(List<long> groupIds)
@@ -118,6 +124,13 @@ public class MonitorService : IDisposable
                     {
                         Log.Information("New topic in group {GroupId}: time={Time}", groupId, topicCreateTime);
                         _lastSeenCreateTime[groupId] = topicCreateTime;
+
+                        // Replace image URLs with CDN URLs before saving
+                        if (_imageHosting != null)
+                        {
+                            try { d.Topic = await _imageHosting.ReplaceImageUrlsAsync(d.Topic); }
+                            catch (Exception ex) { Log.Warning(ex, "Image URL replacement failed for topic {TopicId}", d.Topic.TopicId); }
+                        }
 
                         try { _db.SaveDynamicsBatch(new List<Dynamic> { d }); }
                         catch (Exception ex) { Log.Error(ex, "Failed to save monitored topic"); }

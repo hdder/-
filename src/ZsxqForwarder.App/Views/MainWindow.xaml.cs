@@ -81,6 +81,7 @@ public partial class MainWindow : Window
         ApplyForwarderSettings();
 
         _monitorService = new MonitorService(_forwardService, _db, ScrapeGroupPageAsync, _apiService);
+        _monitorService.SetImageHosting(_imageHosting);
         _monitorService.IntervalSeconds = _db.GetMonitorInterval();
         _monitorService.NewTopicDetected += OnNewTopic;
         _monitorService.ErrorOccurred += OnMonitorError;
@@ -112,7 +113,10 @@ public partial class MainWindow : Window
                 var cookies = await cookieManager.GetCookiesAsync("https://api.zsxq.com");
                 var cookieStr = string.Join("; ", cookies.Select(c => $"{c.Name}={c.Value}"));
                 if (!string.IsNullOrEmpty(cookieStr))
+                {
                     _apiService.InitCookies(cookieStr);
+                    _imageHosting.SetCookies(cookieStr);
+                }
             }
             catch (Exception ex)
             {
